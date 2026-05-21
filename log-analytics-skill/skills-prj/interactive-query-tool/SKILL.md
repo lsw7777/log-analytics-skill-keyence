@@ -1,15 +1,27 @@
 ---
 name: interactive-query-tool
-description: Query and filter Azure Log Analytics Office365 audit logs with precise conditions, displaying results in an interactive HTML viewer with client-side filtering, search, and column management. Use when searching for specific users (by email, userId, UPN), investigating particular events, auditing specific activities, filtering logs by conditions (workload, operation, date, IP), exploring individual log entries in detail, or building ad-hoc log queries. Always use azure_log_query.ps1 to fetch data first, then embed results in an interactive HTML.
+description: Query and filter Azure Log Analytics logs with precise conditions, displaying results in an interactive HTML viewer with client-side filtering, search, and column management. Supports multiple DCR_CL tables. Use when searching for specific users (by email, userId, UPN), investigating particular events, auditing specific activities, filtering logs by conditions (workload, operation, date, IP), exploring individual log entries in detail, or building ad-hoc log queries. Always use azure_log_query.ps1 to fetch data first, then embed results in an interactive HTML.
 ---
 
 # Interactive Query Tool
 
-Query, filter, and explore Office365 Audit logs with a self-contained interactive HTML viewer.
+Query, filter, and explore Azure Log Analytics logs with a self-contained interactive HTML viewer.
+
+## Supported Tables
+
+| Table Name | Description |
+|-----------|-------------|
+| `AuditGeneralDCR_CL` | Office 365 通用审计日志 |
+| `SharePointAuditDCR_CL` | SharePoint 审计日志 |
+| `MessageTraceDataDCR_CL` | 邮件追踪数据 |
+| `AssignedLicensesDCR_CL` | 已分配许可证信息 |
+| `AzureADUsersDCR_CL` | Azure AD 用户信息 |
+| `MailboxStatisticsDCR_CL` | 邮箱统计信息 |
+| `WQCLogDCR_CL` | WQC 日志 |
 
 ## Prerequisites
 
-- `azure_log_query.ps1` script in repo root — the only data source
+- `azure_log_query.ps1` script — the only data source
 - Azure authentication via `Connect-AzAccount` (AzureChinaCloud)
 - Workspace ID: `703a5771-97fc-4bf3-a585-f607d18c4479`
 
@@ -20,7 +32,14 @@ Query, filter, and explore Office365 Audit logs with a self-contained interactiv
 **Always** probe the current schema first — fields change as the ingestion pipeline evolves.
 
 ```bash
-pwsh ./azure_log_query.ps1 -Query "AuditGeneralDCR_CL | take 1" -Hours 24
+# Probe AuditGeneralDCR_CL
+pwsh ./azure_log_query.ps1 -TableName "AuditGeneralDCR_CL" -Query "AuditGeneralDCR_CL | take 1" -Hours 24
+
+# Probe SharePointAuditDCR_CL
+pwsh ./azure_log_query.ps1 -TableName "SharePointAuditDCR_CL" -Query "SharePointAuditDCR_CL | take 1" -Hours 24
+
+# Probe MessageTraceDataDCR_CL
+pwsh ./azure_log_query.ps1 -TableName "MessageTraceDataDCR_CL" -Query "MessageTraceDataDCR_CL | take 1" -Hours 24
 ```
 
 Capture all available column names from the response. Use these to build filters dynamically.
@@ -30,20 +49,20 @@ Capture all available column names from the response. Use these to build filters
 Query logs with specific filters:
 
 ```bash
-# All logs for a user
-pwsh ./azure_log_query.ps1 -Query "AuditGeneralDCR_CL | where UserUPN contains 'user@domain.com' | sort by TimeGenerated desc" -Hours 168
+# AuditGeneralDCR_CL - All logs for a user
+pwsh ./azure_log_query.ps1 -TableName "AuditGeneralDCR_CL" -Query "AuditGeneralDCR_CL | where UserUPN contains 'user@domain.com' | sort by TimeGenerated desc" -Hours 168
 
-# Specific workload + operation
-pwsh ./azure_log_query.ps1 -Query "AuditGeneralDCR_CL | where Workload == 'PowerBI' and Operation contains 'Refresh' | sort by TimeGenerated desc" -Hours 72
+# AuditGeneralDCR_CL - Specific workload + operation
+pwsh ./azure_log_query.ps1 -TableName "AuditGeneralDCR_CL" -Query "AuditGeneralDCR_CL | where Workload == 'PowerBI' and Operation contains 'Refresh' | sort by TimeGenerated desc" -Hours 72
 
-# Failed operations only
-pwsh ./azure_log_query.ps1 -Query "AuditGeneralDCR_CL | where IsSuccess == false | sort by TimeGenerated desc" -Hours 24
+# AuditGeneralDCR_CL - Failed operations only
+pwsh ./azure_log_query.ps1 -TableName "AuditGeneralDCR_CL" -Query "AuditGeneralDCR_CL | where IsSuccess == false | sort by TimeGenerated desc" -Hours 24
 
-# Specific IP address
-pwsh ./azure_log_query.ps1 -Query "AuditGeneralDCR_CL | where ClientIP contains '192.168' | sort by TimeGenerated desc" -Hours 168
+# SharePointAuditDCR_CL - Specific site access
+pwsh ./azure_log_query.ps1 -TableName "SharePointAuditDCR_CL" -Query "SharePointAuditDCR_CL | where SiteUrl contains 'sites/finance' | sort by TimeGenerated desc" -Hours 168
 
-# Time window + user + workload combined
-pwsh ./azure_log_query.ps1 -Query "AuditGeneralDCR_CL | where TimeGenerated > datetime('2026-05-06') and UserUPN contains 'user@' and Workload == 'SharePoint' | sort by TimeGenerated desc" -Hours 96
+# MessageTraceDataDCR_CL - Failed emails
+pwsh ./azure_log_query.ps1 -TableName "MessageTraceDataDCR_CL" -Query "MessageTraceDataDCR_CL | where Status == 'Failed' | sort by TimeGenerated desc" -Hours 24
 ```
 
 **Common filter patterns:**

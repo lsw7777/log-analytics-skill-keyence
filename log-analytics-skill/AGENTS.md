@@ -14,19 +14,32 @@
 - **认证**: 通过 `Connect-AzAccount` 交互式浏览器登录，支持 `-ForceLogin`
 - **模块**: `Az.OperationalInsights` — 通过 `Invoke-AzOperationalInsightsQuery` 执行查询
 
-### 日志数据结构
-- 日志来源于 **Office365 管理活动 API**，已导入 Log Analytics 工作区
-- 表名: `AuditGeneralDCR_CL` (自定义日志表，`_CL` 后缀)。**编写分析代码前，务必先运行快速架构探测查询来发现当前字段** — 字段会随着数据管道的更新而发生变化。
+### 支持的日志表 (DCR_CL)
+- `AuditGeneralDCR_CL` — Office 365 通用审计日志 (默认)
+- `SharePointAuditDCR_CL` — SharePoint 审计日志
+- `MessageTraceDataDCR_CL` — 邮件追踪数据
+- `AssignedLicensesDCR_CL` — 已分配许可证信息
+- `AzureADUsersDCR_CL` — Azure AD 用户信息
+- `MailboxStatisticsDCR_CL` — 邮箱统计信息
+- `WQCLogDCR_CL` — WQC 日志
+
+**编写分析代码前，务必先运行快速架构探测查询来发现当前字段** — 字段会随着数据管道的更新而发生变化。
 
 ### 运行脚本
 ```powershell
-# 快速探测 — 发现当前字段
+# 快速探测 — 发现当前字段 (默认表)
 .\azure_log_query.ps1 -Query "AuditGeneralDCR_CL | take 1"
+
+# 使用 -TableName 参数指定表
+.\azure_log_query.ps1 -TableName "SharePointAuditDCR_CL" -Query "SharePointAuditDCR_CL | take 1"
 
 # 按时间范围查询
 .\azure_log_query.ps1 -Query "<KQL>" -Hours 24
 .\azure_log_query.ps1 -ForceLogin        # 401/403 时重新认证
 .\azure_log_query.ps1 -UseDeviceCode     # 设备代码流
+
+# 导出到 CSV
+.\azure_log_query.ps1 -TableName "AuditGeneralDCR_CL" -Hours 24 -ExportCsv ".\General_20260521.csv"
 ```
 
 ### 待构建的 Skills
