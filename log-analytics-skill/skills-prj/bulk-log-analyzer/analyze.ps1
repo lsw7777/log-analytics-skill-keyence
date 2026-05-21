@@ -1,0 +1,942 @@
+# Azure Log Bulk Analyzer - 2026-05-08
+# Generates self-contained HTML report from exported CSV
+
+$csvPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\General_20260508.csv"
+$outputPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\report_20260508.html"
+$analysisDate = "2026-05-08"
+
+Write-Host "Loading CSV data..." -ForegroundColor Cyan
+$data = Import-Csv -Path $csvPath -Encoding UTF8
+$totalEvents = $data.Count
+Write-Host "Loaded $totalEvents records" -ForegroundColor Green
+
+Write-Host "Computing statistics..." -ForegroundColor Cyan
+
+# Unique users
+$allUsers = @()
+foreach ($row in $data) {
+    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $allUsers += $u
+}
+$uniqueUsers = ($allUsers | Select-Object -Unique).Count
+
+# Unique operations
+$allOps = @($data | ForEach-Object { $_.Operation })
+$uniqueOps = ($allOps | Select-Object -Unique).Count
+
+# Workload distribution
+$workloadMap = @{}
+foreach ($row in $data) {
+    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    $workloadMap[$wl] = ($workloadMap[$wl] + 1)
+}
+
+# Top users
+$userMap = @{}
+foreach ($u in $allUsers) {
+    $userMap[$u] = ($userMap[$u] + 1)
+}
+$topUsers = $userMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15
+
+# Top operations
+$opMap = @{}
+foreach ($o in $allOps) {
+    $opName = if ($o) { $o } else { 'Unknown' }
+    $opMap[$opName] = ($opMap[$opName] + 1)
+}
+$topOps = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15
+
+# Top ClientIPs
+$ipMap = @{}
+foreach ($row in $data) {
+    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { 'Unknown' }
+    $ipMap[$ip] = ($ipMap[$ip] + 1)
+}
+$topIPs = $ipMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10
+
+# Success/Failure
+$successCount = 0
+$failCount = 0
+$unknownCount = 0
+foreach ($row in $data) {
+    $s = $row.IsSuccess
+    if ($s -eq 'true') { $successCount++ }
+    elseif ($s -eq 'false') { $failCount++ }
+    else { $unknownCount++ }
+}
+
+# Activity timeline (by hour)
+$hourMap = @{}
+foreach ($row in $data) {
+    $tg = $row.TimeGenerated
+    if ($tg -and $tg -ne '') {
+        try {
+            $dt = [DateTime]::Parse($tg)
+            $h = $dt.ToString('yyyy-MM-dd HH:00')
+            $hourMap[$h] = ($hourMap[$h] + 1)
+        } catch {}
+    }
+}
+$timelineSorted = $hourMap.GetEnumerator() | Sort-Object Name
+
+# Off-hours activity (00:00-07:00)
+$offHoursEvents = @()
+foreach ($row in $data) {
+    $tg = $row.TimeGenerated
+    if ($tg -and $tg -ne '') {
+        try {
+            $dt = [DateTime]::Parse($tg)
+            $localDt = $dt.ToLocalTime()
+            if ($localDt.Hour -ge 0 -and $localDt.Hour -lt 7) {
+                $offHoursEvents += $row
+            }
+        } catch {}
+    }
+}
+
+# Failed operations details
+$failedEvents = @($data | Where-Object { $_.IsSuccess -eq 'false' })
+$failedByOp = @{}
+foreach ($row in $failedEvents) {
+    $op = if ($row.Operation) { $row.Operation } else { 'Unknown' }
+    $failedByOp[$op] = ($failedByOp[$op] + 1)
+}
+$failedByOp = $failedByOp.GetEnumerator() | Sort-Object Value -Descending
+
+# High-privilege operations
+$highPrivOps = @('ExportReport', 'Search', 'EditDataset', 'Delete', 'DeleteDataset', 'DeleteReport', 'DeleteWorkspace', 'AdminAction')
+$highPrivEvents = @($data | Where-Object { $highPrivOps -contains $_.Operation })
+$highPrivByUser = @{}
+foreach ($row in $highPrivEvents) {
+    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $key = "$u | $($row.Operation)"
+    $highPrivByUser[$key] = ($highPrivByUser[$key] + 1)
+}
+$highPrivByUser = $highPrivByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 20
+
+# Sensitive data events
+$sensitiveOps = @('SensitivityLabeledFileOpened', 'SensitivityLabeledFileRenamed', 'IrmContent', 'AppliedSensitivityLabel', 'ChangedSensitivityLabel')
+$sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains $_.Operation })
+$sensitiveByOp = @{}
+foreach ($row in $sensitiveEvents) {
+    $op = $_.Operation
+    $sensitiveByOp[$op] = ($sensitiveByOp[$op] + 1)
+}
+$sensitiveByOp = $sensitiveByOp.GetEnumerator() | Sort-Object Value -Descending
+
+# Service account activity (GUIDs starting with 0000-...)
+$serviceAcctEvents = @($data | Where-Object { $_.UserId -match '^00000009-' })
+$serviceAcctByOp = @{}
+foreach ($row in $serviceAcctEvents) {
+    $op = if ($row.Operation) { $row.Operation } else { 'Unknown' }
+    $serviceAcctByOp[$op] = ($serviceAcctByOp[$op] + 1)
+}
+$serviceAcctByOp = $serviceAcctByOp.GetEnumerator() | Sort-Object Value -Descending
+
+# IP velocity - single IP with multiple users
+$ipUsers = @{}
+foreach ($row in $data) {
+    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { continue }
+    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
+    $ipUsers[$ip][$u] = 1
+}
+$ipVelocity = @()
+foreach ($ip in $ipUsers.Keys) {
+    $count = $ipUsers[$ip].Count
+    if ($count -gt 5) {
+        $ipVelocity += [PSCustomObject]@{
+            IP = $ip
+            UserCount = $count
+            Users = ($ipUsers[$ip].Keys -join ', ')
+        }
+    }
+}
+$ipVelocity = $ipVelocity | Sort-Object UserCount -Descending
+
+# Suspicious IPs (non-RFC1918 accessing multiple workloads)
+$ipWorkloads = @{}
+foreach ($row in $data) {
+    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { continue }
+    # Skip RFC1918
+    if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' -or $ip -eq 'Unknown' -or $ip -eq '0.0.0.0') { continue }
+    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    if (-not $ipWorkloads.ContainsKey($ip)) { $ipWorkloads[$ip] = @{} }
+    $ipWorkloads[$ip][$wl] = 1
+}
+$suspiciousIPs = @()
+foreach ($ip in $ipWorkloads.Keys) {
+    $wlCount = $ipWorkloads[$ip].Count
+    if ($wlCount -gt 1) {
+        $suspiciousIPs += [PSCustomObject]@{
+            IP = $ip
+            WorkloadCount = $wlCount
+            Workloads = ($ipWorkloads[$ip].Keys -join ', ')
+        }
+    }
+}
+$suspiciousIPs = $suspiciousIPs | Sort-Object WorkloadCount -Descending
+
+# Off-hours by user
+$offHoursByUser = @{}
+foreach ($row in $offHoursEvents) {
+    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $offHoursByUser[$u] = ($offHoursByUser[$u] + 1)
+}
+$offHoursByUser = $offHoursByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15
+
+Write-Host "All statistics computed." -ForegroundColor Green
+
+# ============================================================
+# Build HTML Report
+# ============================================================
+
+Write-Host "Generating HTML report..." -ForegroundColor Cyan
+
+# Helper: escape HTML
+function EscapeHtml {
+    param([string]$text)
+    if (-not $text) { return '' }
+    return $text -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&#39;'
+}
+
+# Build glossary (only ops present in data)
+$glossaryOps = @{}
+$opNames = $opMap.Keys | Sort-Object
+foreach ($op in $opNames) {
+    $expZh = $op  # default fallback
+    $expJa = $op
+    # Known glossary entries
+    switch ($op) {
+        'ViewReport'        { $expZh = '查看 PowerBI 报表'; $expJa = 'PowerBI レポートを閲覧' }
+        'GetWorkspaces'     { $expZh = '获取工作区列表'; $expJa = 'ワークスペース一覧を取得' }
+        'RefreshDataset'    { $expZh = '刷新数据集'; $expJa = 'データセットを更新' }
+        'ExportReport'      { $expZh = '导出报表（有风险）'; $expJa = 'レポートをエクスポート（リスクあり）' }
+        'EditDataset'       { $expZh = '编辑数据集'; $expJa = 'データセットを編集' }
+        'Search'            { $expZh = '执行搜索'; $expJa = '検索を実行' }
+        'Import'            { $expZh = '导入内容'; $expJa = 'コンテンツをインポート' }
+        'MessageSend'       { $expZh = '发送Teams消息'; $expJa = 'Teamsメッセージを送信' }
+        'SensitivityLabeledFileOpened'  { $expZh = '打开敏感标签文件'; $expJa = '機密ラベル付きファイルを開く' }
+        'SensitivityLabeledFileRenamed' { $expZh = '重命名敏感标签文件'; $expJa = '機密ラベル付きファイルの名前を変更' }
+        'MessageReadReceiptReceived'    { $expZh = '收到已读回执'; $expJa = '既読確認を受信' }
+        'GetSnapshots'      { $expZh = '获取快照'; $expJa = 'スナップショットを取得' }
+        'RunEmailSubscription' { $expZh = '运行邮件订阅'; $expJa = 'メールサブスクリプションを実行' }
+        'ApiEndpointCallEvent' { $expZh = 'API端点调用'; $expJa = 'APIエンドポイント呼び出し' }
+        'UpdateSharingPermission' { $expZh = '更新共享权限'; $expJa = '共有権限を更新' }
+        'ShareReport'       { $expZh = '共享报表'; $expJa = 'レポートを共有' }
+        'CreateDataset'     { $expZh = '创建数据集'; $expJa = 'データセットを作成' }
+        'CreateReport'      { $expZh = '创建报表'; $expJa = 'レポートを作成' }
+        'Publish'           { $expZh = '发布内容'; $expJa = 'コンテンツを公開' }
+        default             { $expZh = $op; $expJa = $op }
+    }
+    $glossaryOps[$op] = @{ zh = $expZh; ja = $expJa; count = $opMap[$op] }
+}
+
+# Workload glossary
+$wlGlossary = @{
+    'PowerBI' = @{ zh = 'Power BI 报表平台'; ja = 'Power BI レポートプラットフォーム' }
+    'MicrosoftTeams' = @{ zh = 'Microsoft Teams'; ja = 'Microsoft Teams' }
+    'SecurityComplianceCenter' = @{ zh = '安全与合规中心'; ja = 'セキュリティコンプライアンスセンター' }
+    'OneDrive' = @{ zh = 'OneDrive'; ja = 'OneDrive' }
+    'SharePoint' = @{ zh = 'SharePoint'; ja = 'SharePoint' }
+    'Exchange' = @{ zh = 'Exchange'; ja = 'Exchange' }
+    'AzureActiveDirectory' = @{ zh = 'Azure Active Directory'; ja = 'Azure Active Directory' }
+    'PowerPlatform' = @{ zh = 'Power Platform'; ja = 'Power Platform' }
+}
+
+# Chart colors (cycle through)
+$chartColors = @('#58a6ff', '#3fb950', '#bc8cff', '#f0883e', '#f85149', '#39d2c0', '#58a6ff', '#3fb950', '#bc8cff', '#f0883e', '#f85149', '#39d2c0', '#58a6ff', '#3fb950', '#bc8cff')
+
+# ---- Build JSON data structures ----
+
+function ToJsonArray {
+    param([hashtable]$map)
+    $items = $map.GetEnumerator() | Sort-Object Value -Descending
+    $json = "["
+    $first = $true
+    foreach ($item in $items) {
+        if (-not $first) { $json += ',' }
+        $name = (EscapeHtml $item.Name) -replace '"', '\\"'
+        $json += "{\"name\":\"$name\",\"value\":$($item.Value)}"
+        $first = $false
+    }
+    $json += "]"
+    return $json
+}
+
+function ToSortedJsonArray {
+    param([array]$items, [string]$nameKey = 'Name', [string]$valueKey = 'Value')
+    $json = "["
+    $first = $true
+    foreach ($item in $items) {
+        if (-not $first) { $json += ',' }
+        $name = (EscapeHtml $item.$nameKey) -replace '"', '\\"'
+        $json += "{\"name\":\"$name\",\"value\":$($item.$valueKey)}"
+        $first = $false
+    }
+    $json += "]"
+    return $json
+}
+
+function ToKeyValueJsonArray {
+    param([array]$items, [string]$keyName = 'Name', [string]$valName = 'Value')
+    $json = "["
+    $first = $true
+    foreach ($item in $items) {
+        if (-not $first) { $json += ',' }
+        $k = (EscapeHtml $item.$keyName) -replace '"', '\\"'
+        $v = $item.$valName
+        if ($v -is [int] -or $v -is [double]) {
+            $json += "{\"key\":\"$k\",\"value\":$v}"
+        } else {
+            $json += "{\"key\":\"$k\",\"value\":\"$((EscapeHtml $v) -replace '"', '\\"')\"}"
+        }
+        $first = $false
+    }
+    $json += "]"
+    return $json
+}
+
+$topUsersJson = ToSortedJsonArray $topUsers
+$topOpsJson = ToSortedJsonArray $topOps
+$topIPsJson = ToSortedJsonArray $topIPs
+$timelineJson = ToKeyValueJsonArray $timelineSorted 'Name' 'Value'
+$workloadJson = ToJsonArray $workloadMap
+
+# Failed events JSON
+$failedOpsJson = ToSortedJsonArray -items $failedByOp -nameKey 'Name' -valueKey 'Value'
+
+# High-priv events JSON
+$highPrivJson = ToSortedJsonArray -items $highPrivByUser -nameKey 'Name' -valueKey 'Value'
+
+# Sensitive events JSON
+$sensitiveJson = ToSortedJsonArray -items $sensitiveByOp -nameKey 'Name' -valueKey 'Value'
+
+# Service accounts JSON
+$serviceAcctJson = ToSortedJsonArray -items $serviceAcctByOp -nameKey 'Name' -valueKey 'Value'
+
+# Off-hours JSON
+$offHoursJson = ToSortedJsonArray -items $offHoursByUser
+$suspiciousIPsJson = ToKeyValueJsonArray -items $suspiciousIPs -keyName 'IP' -valName 'Workloads'
+$ipVelocityJson = ToKeyValueJsonArray -items $ipVelocity -keyName 'IP' -valName 'UserCount'
+
+# Glossary JSON
+$glossaryJson = "{"
+$gfirst = $true
+foreach ($op in $glossaryOps.Keys | Sort-Object) {
+    if (-not $gfirst) { $glossaryJson += ',' }
+    $opName = (EscapeHtml $op) -replace '"', '\\"'
+    $glossaryJson += "\"$opName\":{\"zh\":\"$($glossaryOps[$op].zh -replace '"', '\\"')\",\"ja\":\"$($glossaryOps[$op].ja -replace '"', '\\"')\",\"count\":$($glossaryOps[$op].count)}"
+    $gfirst = $false
+}
+$glossaryJson += "}"
+
+# Workload glossary JSON
+$wlGlossaryJson = "{"
+$wfirst = $true
+foreach ($wl in $wlGlossary.Keys | Sort-Object) {
+    if ($workloadMap.ContainsKey($wl)) {
+        if (-not $wfirst) { $wlGlossaryJson += ',' }
+        $wlName = (EscapeHtml $wl) -replace '"', '\\"'
+        $wlGlossaryJson += "\"$wlName\":{\"zh\":\"$($wlGlossary[$wl].zh -replace '"', '\\"')\",\"ja\":\"$($wlGlossary[$wl].ja -replace '"', '\\"')\"}"
+        $wfirst = $false
+    }
+}
+$wlGlossaryJson += "}"
+
+# Build data table - first 500 rows
+$tableRows = ''
+$previewRows = [Math]::Min(500, $data.Count)
+for ($i = 0; $i -lt $previewRows; $i++) {
+    $row = $data[$i]
+    $tg = if ($row.TimeGenerated) { $row.TimeGenerated } else { '' }
+    $user = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { '' }
+    $op = if ($row.Operation) { $row.Operation } else { '' }
+    $wl = if ($row.Workload) { $row.Workload } else { '' }
+    $ip = if ($row.ClientIP) { $row.ClientIP } else { '' }
+    $success = if ($row.IsSuccess) { $row.IsSuccess } else { '' }
+    $tableRows += "<tr><td>$i</td><td>$(EscapeHtml $tg)</td><td class='op-cell' data-op='$(EscapeHtml $op)'>$(EscapeHtml $op)</td><td>$(EscapeHtml $user)</td><td>$(EscapeHtml $wl)</td><td>$(EscapeHtml $ip)</td><td class='status-$(EscapeHtml $success)'>$(EscapeHtml $success)</td></tr>`n"
+}
+
+# Determine risk count
+$riskCount = 0
+if ($failCount -gt 0) { $riskCount++ }
+if ($suspiciousIPs.Count -gt 0) { $riskCount++ }
+if ($offHoursEvents.Count -gt 0) { $riskCount++ }
+if ($highPrivEvents.Count -gt 0) { $riskCount++ }
+if ($sensitiveEvents.Count -gt 0) { $riskCount++ }
+if ($ipVelocity.Count -gt 0) { $riskCount++ }
+
+# Determine if we should show risk section
+$showRiskSection = ($riskCount -gt 0).ToString().ToLower()
+
+$html = @"
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Azure Audit Report - $analysisDate</title>
+<style>
+:root {
+  --bg-primary: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
+  --border: #30363d; --text-primary: #e6edf3; --text-secondary: #8b949e;
+  --accent: #58a6ff; --accent-green: #3fb950; --accent-red: #f85149;
+  --accent-yellow: #d29922; --accent-purple: #bc8cff; --accent-orange: #f0883e;
+  --accent-cyan: #39d2c0;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans JP', Helvetica, Arial, sans-serif; background: var(--bg-primary); color: var(--text-primary); padding: 24px; line-height: 1.6; }
+.navbar { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.navbar h2 { font-size: 14px; color: var(--text-secondary); }
+.lang-toggle { display: flex; gap: 8px; }
+.lang-toggle button { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.lang-toggle button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.lang-toggle button:hover:not(.active) { background: var(--border); }
+.header { background: var(--bg-secondary); border-radius: 8px; padding: 24px; margin-bottom: 24px; border: 1px solid var(--border); }
+.header h1 { font-size: 24px; margin-bottom: 8px; }
+.header .subtitle { color: var(--text-secondary); font-size: 14px; margin-bottom: 16px; }
+.meta-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+.meta-tag { background: var(--bg-tertiary); padding: 4px 12px; border-radius: 20px; font-size: 12px; color: var(--text-secondary); border: 1px solid var(--border); }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.summary-card { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+.summary-card .label { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
+.summary-card .value { font-size: 28px; font-weight: 700; }
+.summary-card .value.green { color: var(--accent-green); }
+.summary-card .value.red { color: var(--accent-red); }
+.summary-card .value.blue { color: var(--accent); }
+.summary-card .value.yellow { color: var(--accent-yellow); }
+.summary-card .value.purple { color: var(--accent-purple); }
+.section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 24px; }
+.section h2 { font-size: 18px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.bar-chart { margin-bottom: 8px; }
+.bar-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 13px; }
+.bar-label { width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; padding-right: 12px; color: var(--text-secondary); cursor: help; }
+.bar-container { flex: 1; background: var(--bg-tertiary); border-radius: 4px; height: 22px; position: relative; min-width: 60px; }
+.bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: rgba(255,255,255,0.9); min-width: 30px; transition: width 0.3s ease; }
+.bar-count { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--text-secondary); }
+.timeline-bar { display: flex; align-items: center; margin-bottom: 3px; font-size: 12px; }
+.timeline-label { width: 130px; color: var(--text-secondary); flex-shrink: 0; }
+.timeline-container { flex: 1; background: var(--bg-tertiary); border-radius: 3px; height: 18px; }
+.timeline-fill { height: 100%; background: var(--accent); border-radius: 3px; opacity: 0.7; }
+.donut-container { display: flex; justify-content: center; align-items: center; gap: 32px; flex-wrap: wrap; }
+.donut-svg { width: 180px; height: 180px; }
+.donut-legend { display: flex; flex-direction: column; gap: 6px; }
+.legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.legend-color { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.seg-bar { height: 24px; border-radius: 6px; overflow: hidden; display: flex; margin-bottom: 12px; }
+.seg-fill { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; color: rgba(255,255,255,0.9); }
+.seg-legend { display: flex; gap: 16px; flex-wrap: wrap; }
+.seg-legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+thead { position: sticky; top: 0; z-index: 10; }
+th { background: var(--bg-tertiary); padding: 10px 8px; text-align: left; border-bottom: 2px solid var(--border); cursor: pointer; user-select: none; color: var(--text-secondary); font-size: 11px; text-transform: uppercase; }
+th:hover { color: var(--text-primary); }
+td { padding: 8px; border-bottom: 1px solid var(--border); }
+tr:hover td { background: var(--bg-tertiary); }
+.table-wrapper { overflow-x: auto; }
+.table-scroll { max-height: 500px; overflow-y: auto; }
+.pagination { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 12px; font-size: 13px; }
+.pagination button { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 4px 12px; border-radius: 4px; cursor: pointer; }
+.pagination button:disabled { opacity: 0.4; cursor: default; }
+.risk-table { width: 100%; margin-bottom: 16px; font-size: 13px; }
+.risk-table th { background: var(--bg-tertiary); }
+.risk-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.risk-high { background: rgba(248,81,73,0.15); color: var(--accent-red); }
+.risk-medium { background: rgba(240,136,62,0.15); color: var(--accent-orange); }
+.risk-low { background: rgba(210,153,34,0.15); color: var(--accent-yellow); }
+.risk-subsection { margin-bottom: 24px; }
+.risk-subsection h3 { font-size: 15px; margin-bottom: 12px; color: var(--accent-red); }
+.tooltip-box { position: fixed; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; z-index: 1000; pointer-events: none; max-width: 350px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: none; }
+.tooltip-box .tip-cn { color: var(--accent); margin-bottom: 4px; }
+.tooltip-box .tip-jp { color: var(--accent-purple); }
+.tooltip-box .tip-op { color: var(--text-secondary); font-size: 11px; margin-bottom: 6px; }
+.glossary-section { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 8px; padding: 24px; margin-bottom: 24px; }
+.glossary-toggle { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); padding: 8px 20px; border-radius: 8px; cursor: pointer; font-size: 14px; margin-bottom: 0; }
+.glossary-toggle:hover { background: var(--border); }
+.glossary-content { display: none; margin-top: 16px; }
+.glossary-content.visible { display: block; }
+.status-true { color: var(--accent-green); }
+.status-false { color: var(--accent-red); }
+</style>
+</head>
+<body>
+<div class="tooltip-box" id="tooltip">
+  <div class="tip-op" id="tip-op"></div>
+  <div class="tip-cn" id="tip-cn"></div>
+  <div class="tip-jp" id="tip-jp"></div>
+</div>
+
+<div class="navbar">
+  <h2>Azure Audit Report</h2>
+  <div class="lang-toggle">
+    <button class="active" onclick="switchLang('zh')">中文</button>
+    <button onclick="switchLang('ja')">日本語</button>
+  </div>
+</div>
+
+<div class="header">
+  <h1>Audit General Report</h1>
+  <div class="subtitle" data-i18n="subtitle">Office365 审计日志分析报告</div>
+  <div class="meta-tags">
+    <span class="meta-tag">查询时间段: $analysisDate</span>
+    <span class="meta-tag">Total Records: $totalEvents</span>
+    <span class="meta-tag">Source: General_20260508.csv</span>
+  </div>
+</div>
+
+<div class="glossary-section">
+  <button class="glossary-toggle" onclick="toggleGlossary()" data-i18n="showGlossary">显示术语表</button>
+  <div class="glossary-content" id="glossary-content">
+    <table class="risk-table">
+      <thead><tr>
+        <th>Operation (EN)</th>
+        <th>说明 (CN)</th>
+        <th>説明 (JP)</th>
+        <th>Count</th>
+      </tr></thead>
+      <tbody id="glossary-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="summary-grid">
+  <div class="summary-card">
+    <div class="label" data-i18n="totalEvents">总事件数</div>
+    <div class="value blue">$totalEvents</div>
+  </div>
+  <div class="summary-card">
+    <div class="label" data-i18n="uniqueUsers">唯一用户</div>
+    <div class="value purple">$uniqueUsers</div>
+  </div>
+  <div class="summary-card">
+    <div class="label" data-i18n="uniqueOps">唯一操作</div>
+    <div class="value yellow">$uniqueOps</div>
+  </div>
+  <div class="summary-card">
+    <div class="label" data-i18n="workloads">工作负载</div>
+    <div class="value green">$($workloadMap.Count)</div>
+  </div>
+  <div class="summary-card">
+    <div class="label" data-i18n="success">成功</div>
+    <div class="value green">$successCount</div>
+  </div>
+  <div class="summary-card">
+    <div class="label" data-i18n="failed">失败</div>
+    <div class="value red">$failCount</div>
+  </div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="activityTimeline">活动时间线</h2>
+  <div id="timeline-chart"></div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="workloadDist">工作负载分布</h2>
+  <div id="donut-chart"></div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="topUsers">活跃用户排行</h2>
+  <div id="users-chart" class="bar-chart"></div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="topOps">操作类型排行</h2>
+  <div id="ops-chart" class="bar-chart"></div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="topIPs">客户端 IP 排行</h2>
+  <div id="ips-chart" class="bar-chart"></div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="successRatio">成功/失败比率</h2>
+  <div id="success-ratio"></div>
+</div>
+
+<div class="section" id="risk-section" style="display: $([if($showRiskSection -eq 'true'){'block'}else{'none'}]);">
+  <h2 data-i18n="riskAnalysis">风险分析</h2>
+  <p style="color:var(--accent-red);margin-bottom:16px;font-size:14px;" data-i18n="riskIndicators">$riskCount 个风险指标已检出</p>
+  <div id="risk-content"></div>
+</div>
+
+<div class="section">
+  <h2 data-i18n="detailedTable">详细数据</h2>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;" data-i18n="tablePreview">预览前 500 行</p>
+  <div class="table-wrapper">
+    <div class="table-scroll">
+      <table id="data-table">
+        <thead>
+          <tr>
+            <th onclick="sortTable(0)">#</th>
+            <th onclick="sortTable(1)" data-i18n="time">时间</th>
+            <th onclick="sortTable(2)" data-i18n="operation">操作</th>
+            <th onclick="sortTable(3)" data-i18n="user">用户</th>
+            <th onclick="sortTable(4)" data-i18n="workload">工作负载</th>
+            <th onclick="sortTable(5)" data-i18n="clientIP">IP</th>
+            <th onclick="sortTable(6)" data-i18n="status">状态</th>
+          </tr>
+        </thead>
+        <tbody id="table-body">
+$tableRows
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="pagination">
+    <button id="prev-btn" onclick="prevPage()" disabled data-i18n="previous">上一页</button>
+    <span id="page-info">1 / 1</span>
+    <button id="next-btn" onclick="nextPage()" disabled data-i18n="next">下一页</button>
+  </div>
+</div>
+
+<script>
+// ===== i18n =====
+let currentLang = 'zh';
+const i18n = {
+  zh: {
+    "totalEvents":"总事件数","uniqueUsers":"唯一用户","uniqueOps":"唯一操作","workloads":"工作负载",
+    "success":"成功","failed":"失败","activityTimeline":"活动时间线","workloadDist":"工作负载分布",
+    "topUsers":"活跃用户排行","topOps":"操作类型排行","topIPs":"客户端 IP 排行",
+    "successRatio":"成功/失败比率","riskAnalysis":"风险分析","detailedTable":"详细数据",
+    "showGlossary":"显示术语表","hideGlossary":"隐藏术语表","metric":"指标","value":"值",
+    "severity":"严重程度","unknown":"未知","previous":"上一页","next":"下一页",
+    "subtitle":"Office365 审计日志分析报告","tablePreview":"预览前 500 行",
+    "time":"时间","operation":"操作","user":"用户","workload":"工作负载","clientIP":"IP",
+    "status":"状态","riskIndicators":"$riskCount 个风险指标已检出",
+    "failedOps":"失败操作","suspiciousIPs":"可疑 IP","offHours":"非工作时间活动",
+    "highPrivOps":"高权限操作","sensitiveData":"敏感数据事件","ipVelocity":"IP 多用户关联",
+    "serviceAccounts":"服务账户活动","low":"低风险","medium":"中风险","high":"高风险",
+    "offHoursUsers":"非工作时活跃用户","failedOpSummary":"失败操作汇总","count":"次数"
+  },
+  ja: {
+    "totalEvents":"総イベント数","uniqueUsers":"ユニークユーザー","uniqueOps":"ユニーク操作","workloads":"ワークロード",
+    "success":"成功","failed":"失敗","activityTimeline":"アクティビティタイムライン","workloadDist":"ワークロード分布",
+    "topUsers":"アクティブユーザーランキング","topOps":"操作タイプランキング","topIPs":"クライアント IP ランキング",
+    "successRatio":"成功/失敗比率","riskAnalysis":"リスク分析","detailedTable":"詳細データ",
+    "showGlossary":用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
+    "severity":"重要度","unknown":"不明","previous":"前へ""next":"次へ",
+    "subtitle":"Office365 監査ログ分析レポート","tablePreview":"最初の 500 行をプレビュー",
+    "time":"時間","operation":"操作","user":"ユーザー","workload":"ワークロード","clientIP":"IP",
+    "status":"ステータス","riskIndicators":"$riskCount 件のリスク指標が検出されました",
+    "failedOps":"失敗した操作","suspiciousIPs":"不審な IP","offHours":"時間外のアクティビティ",
+    "highPrivOps":"高権限操作","sensitiveData":"機密データイベント","ipVelocity":"IP 複数ユーザー",
+    "serviceAccounts":"サービスアカウント","low":"低リスク","medium":"中リスク","high":"高リスク",
+    "offHoursUsers":"時間外アクティブユーザー","failedOpSummary":"失敗操作まとめ","count":"回数"
+  }
+};
+
+function switchLang(lang) {
+  currentLang = lang;
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.getAttribute('data-i18n');
+    if (i18n[lang] && i18n[lang][key]) {
+      el.textContent = i18n[lang][key];
+    }
+  });
+  document.querySelectorAll('.lang-toggle button').forEach(btn => {
+    btn.classList.remove('active');
+    if ((lang === 'zh' && btn.textContent === '中文') || (lang === 'ja' && btn.textContent === '日本語')) {
+      btn.classList.add('active');
+    }
+  });
+  refreshGlossary();
+  buildRiskSection();
+}
+
+// ===== Glossary =====
+const glossaryData = JSON.parse('$glossaryJson');
+const wlGlossaryData = JSON.parse('$wlGlossaryJson');
+let glossaryVisible = false;
+
+function toggleGlossary() {
+  glossaryVisible = !glossaryVisible;
+  const el = document.getElementById('glossary-content');
+  const btn = document.querySelector('.glossary-toggle');
+  if (glossaryVisible) {
+    el.classList.add('visible');
+    btn.textContent = i18n[currentLang]['hideGlossary'] || '隐藏术语表';
+    refreshGlossary();
+  } else {
+    el.classList.remove('visible');
+    btn.textContent = i18n[currentLang]['showGlossary'] || '显示术语表';
+  }
+}
+
+function refreshGlossary() {
+  const tbody = document.getElementById('glossary-body');
+  if (!tbody) return;
+  let html = '';
+  const keys = Object.keys(glossaryData).sort((a, b) => glossaryData[b].count - glossaryData[a].count);
+  keys.forEach(op => {
+    const g = glossaryData[op];
+    const desc = currentLang === 'zh' ? g.zh : g.ja;
+    html += '<tr><td>' + op + '</td><td>' + desc + '</td><td>' + (currentLang === 'zh' ? g.ja : g.zh) + '</td><td>' + g.count + '</td></tr>';
+  });
+  tbody.innerHTML = html;
+}
+
+// ===== Tooltip =====
+const tooltip = document.getElementById('tooltip');
+function showTooltip(e, op) {
+  const g = glossaryData[op];
+  if (!g) return;
+  document.getElementById('tip-op').textContent = op;
+  document.getElementById('tip-cn').textContent = g.zh;
+  document.getElementById('tip-jp').textContent = g.ja;
+  tooltip.style.display = 'block';
+  const x = Math.min(e.pageX + 10, window.innerWidth - 360);
+  const y = Math.min(e.pageY + 10, window.innerHeight - 100);
+  tooltip.style.left = x + 'px';
+  tooltip.style.top = y + 'px';
+}
+function hideTooltip() { tooltip.style.display = 'none'; }
+document.addEventListener('mouseover', function(e) {
+  const cell = e.target.closest('.op-cell');
+  if (cell) showTooltip(e, cell.getAttribute('data-op'));
+});
+document.addEventListener('mouseout', function(e) {
+  if (e.target.closest('.op-cell')) hideTooltip();
+});
+
+// ===== Render Charts =====
+const chartColors = ['#58a6ff','#3fb950','#bc8cff','#f0883e','#f85149','#39d2c0'];
+
+function renderBarChart(containerId, data, maxItems) {
+  const container = document.getElementById(containerId);
+  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">No data</p>'; return; }
+  const items = data.slice(0, maxItems);
+  const maxVal = items.length > 0 ? items[0].value : 1;
+  let html = '';
+  items.forEach((item, i) => {
+    const pct = Math.max((item.value / maxVal) * 100, 2);
+    const color = chartColors[i % chartColors.length];
+    const g = glossaryData[item.name];
+    const tooltipAttr = g ? 'data-tooltip="true"' : '';
+    html += '<div class="bar-item">';
+    html += '<div class="bar-label op-cell" data-op="' + item.name + '" style="cursor:help">' + item.name + '</div>';
+    html += '<div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '">' + item.value + '</div></div>';
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
+function renderDonut(containerId, data) {
+  const container = document.getElementById(containerId);
+  if (!container || !data || data.length === 0) return;
+  const total = data.reduce((s, d) => s + d.value, 0);
+  const r = 70;
+  const circumference = 2 * Math.PI * r;
+  let offset = 0;
+  let circles = '';
+  let legend = '';
+  data.forEach((item, i) => {
+    const pct = item.value / total;
+    const dash = pct * circumference;
+    const gap = circumference - dash;
+    const color = chartColors[i % chartColors.length];
+    circles += '<circle cx="90" cy="90" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="24" stroke-dasharray="' + dash + ' ' + gap + '" stroke-dashoffset="' + (-offset) + '" transform="rotate(-90 90 90)"/>';
+    offset += dash;
+    const wl = wlGlossaryData[item.name];
+    const wlLabel = wl ? (currentLang === 'zh' ? wl.zh : wl.ja) : item.name;
+    legend += '<div class="legend-item"><div class="legend-color" style="background:' + color + '"></div><span>' + wlLabel + ' (' + item.value + ')</span></div>';
+  });
+  let svgHtml = '<div class="donut-container">';
+  svgHtml += '<svg class="donut-svg" viewBox="0 0 180 180">' + circles + '<text x="90" y="90" text-anchor="middle" dominant-baseline="central" fill="var(--text-primary)" font-size="18" font-weight="600">' + total + '</text></svg>';
+  svgHtml += '<div class="donut-legend">' + legend + '</div></div>';
+  container.innerHTML = svgHtml;
+}
+
+function renderTimeline(containerId, data) {
+  const container = document.getElementById(containerId);
+  if (!container || !data || data.length === 0) return;
+  const maxVal = data.reduce((m, d) => Math.max(m, d.value), 0);
+  let html = '';
+  data.forEach(item => {
+    const pct = maxVal > 0 ? (item.value / maxVal) * 100 : 0;
+    const label = item.key.split(' ')[1] || item.key;
+    html += '<div class="timeline-bar"><div class="timeline-label">' + label + '</div><div class="timeline-container"><div class="timeline-fill" style="width:' + pct + '%"></div></div></div>';
+  });
+  container.innerHTML = html;
+}
+
+function renderSuccessRatio(containerId, success, fail, unknown) {
+  const container = document.getElementById(containerId);
+  const total = success + fail + unknown;
+  if (total === 0) return;
+  const sPct = ((success / total) * 100).toFixed(1);
+  const fPct = ((fail / total) * 100).toFixed(1);
+  const uPct = ((unknown / total) * 100).toFixed(1);
+  let html = '<div class="seg-bar">';
+  if (success > 0) html += '<div class="seg-fill" style="width:' + sPct + '%;background:var(--accent-green)">' + sPct + '%</div>';
+  if (fail > 0) html += '<div class="seg-fill" style="width:' + fPct + '%;background:var(--accent-red)">' + fPct + '%</div>';
+  if (unknown > 0) html += '<div class="seg-fill" style="width:' + uPct + '%;background:var(--text-secondary)">' + uPct + '%</div>';
+  html += '</div><div class="seg-legend">';
+  html += '<div class="seg-legend-item"><div class="legend-color" style="background:var(--accent-green)"></div>成功 (' + success + ')</div>';
+  html += '<div class="seg-legend-item"><div class="legend-color" style="background:var(--accent-red)"></div>失败 (' + fail + ')</div>';
+  if (unknown > 0) html += '<div class="seg-legend-item"><div class="legend-color" style="background:var(--text-secondary)"></div>未知 (' + unknown + ')</div>';
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ===== Table Pagination =====
+const rowsPerPage = 50;
+let currentPage = 1;
+function initPagination() {
+  const total = document.querySelectorAll('#table-body tr').length;
+  const totalPages = Math.ceil(total / rowsPerPage) || 1;
+  showPage(1, totalPages);
+  window._totalPages = totalPages;
+}
+function showPage(page, total) {
+  currentPage = page;
+  const totalRows = document.querySelectorAll('#table-body tr').length;
+  const start = (page - 1) * rowsPerPage;
+  const rows = document.querySelectorAll('#table-body tr');
+  rows.forEach((row, i) => { row.style.display = (i >= start && i < start + rowsPerPage) ? '' : 'none'; });
+  document.getElementById('page-info').textContent = page + ' / ' + total;
+  document.getElementById('prev-btn').disabled = (page <= 1);
+  document.getElementById('next-btn').disabled = (page >= total);
+}
+function prevPage() { if (currentPage > 1) showPage(currentPage - 1, window._totalPages); }
+function nextPage() { if (currentPage < window._totalPages) showPage(currentPage + 1, window._totalPages); }
+
+// ===== Table Sort =====
+let sortDir = {};
+function sortTable(colIdx) {
+  const tbody = document.getElementById('table-body');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  sortDir[colIdx] = !sortDir[colIdx];
+  const dir = sortDir[colIdx] ? 1 : -1;
+  rows.sort((a, b) => {
+    const aText = a.cells[colIdx]?.textContent || '';
+    const bText = b.cells[colIdx]?.textContent || '';
+    const aNum = parseFloat(aText);
+    const bNum = parseFloat(bText);
+    if (!isNaN(aNum) && !isNaN(bNum)) return (aNum - bNum) * dir;
+    return aText.localeCompare(bText) * dir;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// ===== Risk Section =====
+const riskData = {
+  failedOps: JSON.parse('$failedOpsJson'),
+  highPriv: JSON.parse('$highPrivJson'),
+  sensitive: JSON.parse('$sensitiveJson'),
+  serviceAcct: JSON.parse('$serviceAcctJson'),
+  offHoursUsers: JSON.parse('$offHoursJson'),
+  suspiciousIPs: JSON.parse('$suspiciousIPsJson'),
+  ipVelocity: JSON.parse('$ipVelocityJson'),
+  failCount: $failCount,
+  highPrivCount: $($highPrivEvents.Count),
+  sensitiveCount: $($sensitiveEvents.Count),
+  serviceAcctCount: $($serviceAcctEvents.Count),
+  offHoursCount: $($offHoursEvents.Count),
+  suspiciousCount: $($suspiciousIPs.Count),
+  ipVelocityCount: $($ipVelocity.Count)
+};
+
+function buildRiskSection() {
+  const container = document.getElementById('risk-content');
+  if (!container) return;
+  let html = '';
+
+  // Failed operations
+  if (riskData.failCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['failedOps'] || '失败操作') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>Operation</th><th>' + (i18n[currentLang]['count'] || '次数') + '</th></tr></thead><tbody>';
+    riskData.failedOps.slice(0, 10).forEach(item => {
+      html += '<tr><td class="op-cell" data-op="' + item.name + '">' + item.name + '</td><td class="status-false">' + item.value + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Off-hours activity
+  if (riskData.offHoursCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['offHours'] || '非工作时间活动') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>' + (i18n[currentLang]['user'] || '用户') + '</th><th>Events</th></tr></thead><tbody>';
+    riskData.offHoursUsers.slice(0, 10).forEach(item => {
+      const sev = item.value > 20 ? 'high' : item.value > 5 ? 'medium' : 'low';
+      html += '<tr><td>' + item.name + '</td><td><span class="risk-badge risk-' + sev + '">' + item.value + '</span></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // High-priv operations
+  if (riskData.highPrivCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['highPrivOps'] || '高权限操作') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>User | Operation</th><th>Count</th></tr></thead><tbody>';
+    riskData.highPriv.slice(0, 15).forEach(item => {
+      html += '<tr><td class="op-cell" data-op="' + item.name + '">' + item.name + '</td><td>' + item.value + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Sensitive data events
+  if (riskData.sensitiveCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['sensitiveData'] || '敏感数据事件') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>Operation</th><th>Count</th></tr></thead><tbody>';
+    riskData.sensitive.forEach(item => {
+      html += '<tr><td class="op-cell" data-op="' + item.name + '">' + item.name + '</td><td>' + item.value + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Suspicious IPs
+  if (riskData.suspiciousCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['suspiciousIPs'] || '可疑 IP') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>IP</th><th>Workloads</th></tr></thead><tbody>';
+    riskData.suspiciousIPs.slice(0, 10).forEach(item => {
+      html += '<tr><td>' + item.key + '</td><td>' + item.value + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // IP velocity
+  if (riskData.ipVelocityCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['ipVelocity'] || 'IP 多用户关联') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>IP</th><th>User Count</th></tr></thead><tbody>';
+    riskData.ipVelocity.slice(0, 10).forEach(item => {
+      html += '<tr><td>' + item.key + '</td><td><span class="risk-badge risk-high">' + item.value + '</span></td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  // Service accounts
+  if (riskData.serviceAcctCount > 0) {
+    html += '<div class="risk-subsection"><h3>' + (i18n[currentLang]['serviceAccounts'] || '服务账户活动') + '</h3>';
+    html += '<table class="risk-table"><thead><tr><th>Operation</th><th>Count</th></tr></thead><tbody>';
+    riskData.serviceAcct.slice(0, 15).forEach(item => {
+      html += '<tr><td class="op-cell" data-op="' + item.name + '">' + item.name + '</td><td>' + item.value + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+  }
+
+  if (html === '') {
+    html = '<p style="color:var(--accent-green)">No risk indicators detected.</p>';
+  }
+  container.innerHTML = html;
+}
+
+// ===== Init =====
+document.addEventListener('DOMContentLoaded', function() {
+  renderTimeline('timeline-chart', JSON.parse('$timelineJson'));
+  renderDonut('donut-chart', JSON.parse('$workloadJson'));
+  renderBarChart('users-chart', JSON.parse('$topUsersJson'), 15);
+  renderBarChart('ops-chart', JSON.parse('$topOpsJson'), 15);
+  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10);
+  renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
+  initPagination();
+  buildRiskSection();
+});
+</script>
+</body>
+</html>
+"@
+
+$html | Out-File -FilePath $outputPath -Encoding UTF8
+Write-Host "Report saved to: $outputPath" -ForegroundColor Green
