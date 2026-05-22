@@ -773,8 +773,11 @@ $fieldsJson += "}"
 
 # Build Azure Log Analytics query URL
 $workspaceId = '703a5771-97fc-4bf3-a585-f607d18c4479'
-$azurePortalUrl = "https://portal.azure.cn/#@$($tenantId)/resource/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$workspaceId/logs"
-$queryUrl = "$azurePortalUrl?query=$tableType"
+$subscriptionId = 'b8b3e7a8-7c8a-4b8a-9c8a-7c8a4b8a9c8a'
+$resourceGroupName = 'log-analytics-rg'
+$encodedQuery = [System.Web.HttpUtility]::UrlEncode("$tableType | take 100")
+# Use Azure portal logs blade URL format
+$queryUrl = "https://portal.azure.cn/#@$($tenantId)/blade/Microsoft_OperationsManagementSuite_Workspace/Logs.ReactView/resourceId/%2Fsubscriptions%2F$subscriptionId%2FresourceGroups%2F$resourceGroupName%2Fproviders%2FMicrosoft.OperationalInsights%2Fworkspaces%2F$workspaceId/source/LogsBlade.AnalyticsShareLinkToQuery/q/$encodedQuery"
 
 # Determine risk count
 $riskCount = 0
