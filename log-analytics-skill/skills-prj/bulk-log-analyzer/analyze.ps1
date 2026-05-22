@@ -1,9 +1,16 @@
-# Azure Log Bulk Analyzer - 2026-05-08
+# Azure Log Bulk Analyzer
 # Generates self-contained HTML report from exported CSV
 
-$csvPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\General_20260508.csv"
-$outputPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\report_20260508.html"
-$analysisDate = "2026-05-08"
+param(
+    [Parameter(Mandatory = $false)]
+    [string]$CsvPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\General_$(Get-Date -Format 'yyyyMMdd').csv",
+
+    [Parameter(Mandatory = $false)]
+    [string]$OutputPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\report_$(Get-Date -Format 'yyyyMMdd_HHmm').html",
+
+    [Parameter(Mandatory = $false)]
+    [string]$AnalysisDate = "$(Get-Date -Format 'yyyy-MM-dd')"
+)
 
 Write-Host "Loading CSV data..." -ForegroundColor Cyan
 $data = Import-Csv -Path $csvPath -Encoding UTF8
