@@ -1,4 +1,4 @@
-# Azure Log Bulk Analyzer
+﻿# Azure Log Bulk Analyzer
 # Generates self-contained HTML report from exported CSV
 
 param(
@@ -126,7 +126,7 @@ $sensitiveOps = @('SensitivityLabeledFileOpened', 'SensitivityLabeledFileRenamed
 $sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains $_.Operation })
 $sensitiveByOp = @{}
 foreach ($row in $sensitiveEvents) {
-    $op = $_.Operation
+    $op = $row.Operation
     $sensitiveByOp[$op] = ($sensitiveByOp[$op] + 1)
 }
 $sensitiveByOp = $sensitiveByOp.GetEnumerator() | Sort-Object Value -Descending
@@ -263,8 +263,8 @@ function ToJsonArray {
     $first = $true
     foreach ($item in $items) {
         if (-not $first) { $json += ',' }
-        $name = (EscapeHtml $item.Name) -replace '"', '\\"'
-        $json += "{\"name\":\"$name\",\"value\":$($item.Value)}"
+        $name = (EscapeHtml $item.Name) -replace '"', '\"'
+        $json += '{' + '"name":"' + $name + '","value":' + $item.Value + '}'
         $first = $false
     }
     $json += "]"
@@ -277,8 +277,8 @@ function ToSortedJsonArray {
     $first = $true
     foreach ($item in $items) {
         if (-not $first) { $json += ',' }
-        $name = (EscapeHtml $item.$nameKey) -replace '"', '\\"'
-        $json += "{\"name\":\"$name\",\"value\":$($item.$valueKey)}"
+        $name = (EscapeHtml $item.$nameKey) -replace '"', '\"'
+        $json += '{' + '"name":"' + $name + '","value":' + $item.$valueKey + '}'
         $first = $false
     }
     $json += "]"
@@ -291,12 +291,13 @@ function ToKeyValueJsonArray {
     $first = $true
     foreach ($item in $items) {
         if (-not $first) { $json += ',' }
-        $k = (EscapeHtml $item.$keyName) -replace '"', '\\"'
+        $k = (EscapeHtml $item.$keyName) -replace '"', '\"'
         $v = $item.$valName
         if ($v -is [int] -or $v -is [double]) {
-            $json += "{\"key\":\"$k\",\"value\":$v}"
+            $json += '{' + '"key":"' + $k + '","value":' + $v + '}'
         } else {
-            $json += "{\"key\":\"$k\",\"value\":\"$((EscapeHtml $v) -replace '"', '\\"')\"}"
+            $vs = (EscapeHtml $v) -replace '"', '\"'
+            $json += '{' + '"key":"' + $k + '","value":"' + $vs + '"}'
         }
         $first = $false
     }
@@ -332,8 +333,10 @@ $glossaryJson = "{"
 $gfirst = $true
 foreach ($op in $glossaryOps.Keys | Sort-Object) {
     if (-not $gfirst) { $glossaryJson += ',' }
-    $opName = (EscapeHtml $op) -replace '"', '\\"'
-    $glossaryJson += "\"$opName\":{\"zh\":\"$($glossaryOps[$op].zh -replace '"', '\\"')\",\"ja\":\"$($glossaryOps[$op].ja -replace '"', '\\"')\",\"count\":$($glossaryOps[$op].count)}"
+    $opName = (EscapeHtml $op) -replace '"', '\"'
+    $zhVal = $glossaryOps[$op].zh -replace '"', '\"'
+    $jaVal = $glossaryOps[$op].ja -replace '"', '\"'
+    $glossaryJson += '"' + $opName + '":{"zh":"' + $zhVal + '","ja":"' + $jaVal + '","count":' + $glossaryOps[$op].count + '}'
     $gfirst = $false
 }
 $glossaryJson += "}"
@@ -344,8 +347,10 @@ $wfirst = $true
 foreach ($wl in $wlGlossary.Keys | Sort-Object) {
     if ($workloadMap.ContainsKey($wl)) {
         if (-not $wfirst) { $wlGlossaryJson += ',' }
-        $wlName = (EscapeHtml $wl) -replace '"', '\\"'
-        $wlGlossaryJson += "\"$wlName\":{\"zh\":\"$($wlGlossary[$wl].zh -replace '"', '\\"')\",\"ja\":\"$($wlGlossary[$wl].ja -replace '"', '\\"')\"}"
+        $wlName = (EscapeHtml $wl) -replace '"', '\"'
+        $zhVal = $wlGlossary[$wl].zh -replace '"', '\"'
+        $jaVal = $wlGlossary[$wl].ja -replace '"', '\"'
+        $wlGlossaryJson += '"' + $wlName + '":{"zh":"' + $zhVal + '","ja":"' + $jaVal + '"}'
         $wfirst = $false
     }
 }
@@ -564,7 +569,7 @@ tr:hover td { background: var(--bg-tertiary); }
   <div id="success-ratio"></div>
 </div>
 
-<div class="section" id="risk-section" style="display: $([if($showRiskSection -eq 'true'){'block'}else{'none'}]);">
+<div class="section" id="risk-section" style="display: $(if($showRiskSection -eq 'true'){'block'}else{'none'});">
   <h2 data-i18n="riskAnalysis">风险分析</h2>
   <p style="color:var(--accent-red);margin-bottom:16px;font-size:14px;" data-i18n="riskIndicators">$riskCount 个风险指标已检出</p>
   <div id="risk-content"></div>
@@ -624,8 +629,8 @@ const i18n = {
     "success":"成功","failed":"失敗","activityTimeline":"アクティビティタイムライン","workloadDist":"ワークロード分布",
     "topUsers":"アクティブユーザーランキング","topOps":"操作タイプランキング","topIPs":"クライアント IP ランキング",
     "successRatio":"成功/失敗比率","riskAnalysis":"リスク分析","detailedTable":"詳細データ",
-    "showGlossary":用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
-    "severity":"重要度","unknown":"不明","previous":"前へ""next":"次へ",
+    "showGlossary":"用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
+    "severity":"重要度","unknown":"不明","previous":"前へ","next":"次へ",
     "subtitle":"Office365 監査ログ分析レポート","tablePreview":"最初の 500 行をプレビュー",
     "time":"時間","operation":"操作","user":"ユーザー","workload":"ワークロード","clientIP":"IP",
     "status":"ステータス","riskIndicators":"$riskCount 件のリスク指標が検出されました",
@@ -655,8 +660,8 @@ function switchLang(lang) {
 }
 
 // ===== Glossary =====
-const glossaryData = JSON.parse('$glossaryJson');
-const wlGlossaryData = JSON.parse('$wlGlossaryJson');
+const glossaryData = $glossaryJson;
+const wlGlossaryData = $wlGlossaryJson;
 let glossaryVisible = false;
 
 function toggleGlossary() {
@@ -831,13 +836,13 @@ function sortTable(colIdx) {
 
 // ===== Risk Section =====
 const riskData = {
-  failedOps: JSON.parse('$failedOpsJson'),
-  highPriv: JSON.parse('$highPrivJson'),
-  sensitive: JSON.parse('$sensitiveJson'),
-  serviceAcct: JSON.parse('$serviceAcctJson'),
-  offHoursUsers: JSON.parse('$offHoursJson'),
-  suspiciousIPs: JSON.parse('$suspiciousIPsJson'),
-  ipVelocity: JSON.parse('$ipVelocityJson'),
+  failedOps: $failedOpsJson,
+  highPriv: $highPrivJson,
+  sensitive: $sensitiveJson,
+  serviceAcct: $serviceAcctJson,
+  offHoursUsers: $offHoursJson,
+  suspiciousIPs: $suspiciousIPsJson,
+  ipVelocity: $ipVelocityJson,
   failCount: $failCount,
   highPrivCount: $($highPrivEvents.Count),
   sensitiveCount: $($sensitiveEvents.Count),
@@ -931,11 +936,11 @@ function buildRiskSection() {
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', function() {
-  renderTimeline('timeline-chart', JSON.parse('$timelineJson'));
-  renderDonut('donut-chart', JSON.parse('$workloadJson'));
-  renderBarChart('users-chart', JSON.parse('$topUsersJson'), 15);
-  renderBarChart('ops-chart', JSON.parse('$topOpsJson'), 15);
-  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10);
+  renderTimeline('timeline-chart', $timelineJson);
+  renderDonut('donut-chart', $workloadJson);
+  renderBarChart('users-chart', $topUsersJson, 15);
+  renderBarChart('ops-chart', $topOpsJson, 15);
+  renderBarChart('ips-chart', $topIPsJson, 10);
   renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
   initPagination();
   buildRiskSection();
