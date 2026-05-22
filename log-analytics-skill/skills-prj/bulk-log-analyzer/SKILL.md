@@ -147,6 +147,16 @@ Create a **self-contained** HTML report using the **standard template** below. T
   <!-- Meta tags: 查询时间范围 (from user-specified time, NOT data TimeGenerated) -->
   <!-- Example: "查询时间段：2026-05-07" or "Query Period: 2026-05-07" -->
   <!-- Total Records, Source file info -->
+  <!-- Link to Azure Log Analytics portal for direct log viewing -->
+</div>
+<div class="section" id="table-info-section">
+  <!-- Table Info: displays table name, description in CN/JP -->
+</div>
+<div class="section" id="field-dict-section">
+  <!-- Field Dictionary: table of all fields with CN/JP/EN descriptions -->
+</div>
+<div class="section" id="ai-analysis-section">
+  <!-- AI Analysis: auto-generated insights from log data -->
 </div>
 <div class="section" id="glossary-section">
   <!-- Operation Glossary: table mapping raw operation values to Chinese/Japanese explanations -->

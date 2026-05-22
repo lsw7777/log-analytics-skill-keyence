@@ -30,6 +30,19 @@ $TableSchemas = @{
         TimeField = 'TimeGenerated'
         ShortName = 'General'
         DisplayName = 'Audit General'
+        Description = 'Microsoft 365 通用审计日志，记录用户和管理员在Microsoft 365服务中的操作，包括Power BI、Teams、Exchange、SharePoint等'
+        DescriptionJa = 'Microsoft 365 汎用監査ログ。Power BI、Teams、Exchange、SharePointなどのサービスにおけるユーザーおよび管理者の操作を記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'UserUPN' = @{ zh = '用户主体名称'; ja = 'ユーザープリンシパル名'; en = 'User Principal Name' }
+            'UserId' = @{ zh = '用户ID'; ja = 'ユーザーID'; en = 'User ID' }
+            'Operation' = @{ zh = '操作类型'; ja = '操作タイプ'; en = 'Operation type' }
+            'Workload' = @{ zh = '工作负载/服务'; ja = 'ワークロード/サービス'; en = 'Workload/Service' }
+            'ClientIP' = @{ zh = '客户端IP地址'; ja = 'クライアントIPアドレス'; en = 'Client IP address' }
+            'IsSuccess' = @{ zh = '是否成功'; ja = '成功かどうか'; en = 'Whether operation succeeded' }
+            'RecordType' = @{ zh = '记录类型'; ja = 'レコードタイプ'; en = 'Record type' }
+            'ObjectId' = @{ zh = '操作对象'; ja = '操作対象'; en = 'Operation target' }
+        }
     }
     # SharePointAuditDCR_CL: no IsSuccess field, use ResultStatus
     'SharePointAuditDCR_CL' = @{
@@ -44,20 +57,46 @@ $TableSchemas = @{
         TimeField = 'TimeGenerated'
         ShortName = 'SPAudit'
         DisplayName = 'SharePoint Audit'
+        Description = 'SharePoint Online 审计日志，记录SharePoint站点和文档的访问、修改、共享等操作'
+        DescriptionJa = 'SharePoint Online 監査ログ。SharePointサイトおよびドキュメントへのアクセス、変更、共有などの操作を記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'UserId' = @{ zh = '用户ID'; ja = 'ユーザーID'; en = 'User ID' }
+            'UserKey' = @{ zh = '用户密钥'; ja = 'ユーザーキー'; en = 'User Key' }
+            'Operation' = @{ zh = '操作类型'; ja = '操作タイプ'; en = 'Operation type' }
+            'Workload' = @{ zh = '工作负载'; ja = 'ワークロード'; en = 'Workload' }
+            'ClientIP' = @{ zh = '客户端IP地址'; ja = 'クライアントIPアドレス'; en = 'Client IP address' }
+            'ResultStatus' = @{ zh = '结果状态 (0=成功, 1=失败)'; ja = '結果ステータス (0=成功, 1=失敗)'; en = 'Result status (0=success, 1=failure)' }
+            'SourceFileName' = @{ zh = '源文件名'; ja = 'ソースファイル名'; en = 'Source file name' }
+            'SiteUrl' = @{ zh = '站点URL'; ja = 'サイトURL'; en = 'Site URL' }
+        }
     }
     # MessageTraceDataDCR_CL: use Status field
     'MessageTraceDataDCR_CL' = @{
         SuccessField = 'Status'
         SuccessValue = 'Delivered'
         FailValue = 'Failed'
-        UserField = 'Sender'
-        UserFallback = 'Recipient'
+        UserField = 'SenderAddress'
+        UserFallback = 'RecipientAddress'
         OpField = 'Status'
-        WlField = 'Workload'
-        IpField = 'ClientIP'
+        WlField = ''
+        IpField = 'FromIP'
         TimeField = 'TimeGenerated'
         ShortName = 'MsgTrace'
         DisplayName = 'Message Trace'
+        Description = 'Exchange Online 邮件追踪数据，记录邮件的发送、接收、传递状态和路径信息'
+        DescriptionJa = 'Exchange Online メール追跡データ。メールの送信、受信、配信状態と経路情報を記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'SenderAddress' = @{ zh = '发件人地址'; ja = '送信者アドレス'; en = 'Sender address' }
+            'RecipientAddress' = @{ zh = '收件人地址'; ja = '受信者アドレス'; en = 'Recipient address' }
+            'Status' = @{ zh = '传递状态 (Delivered/Failed)'; ja = '配信状態 (Delivered/Failed)'; en = 'Delivery status' }
+            'Subject' = @{ zh = '邮件主题'; ja = 'メール件名'; en = 'Email subject' }
+            'MessageId' = @{ zh = '邮件ID'; ja = 'メールID'; en = 'Message ID' }
+            'FromIP' = @{ zh = '发件人IP地址'; ja = '送信者IPアドレス'; en = 'Sender IP address' }
+            'Received' = @{ zh = '接收时间'; ja = '受信時間'; en = 'Received time' }
+            'TenantId' = @{ zh = '租户ID'; ja = 'テナントID'; en = 'Tenant ID' }
+        }
     }
     # AssignedLicensesDCR_CL: no success/failure concept
     'AssignedLicensesDCR_CL' = @{
@@ -65,27 +104,53 @@ $TableSchemas = @{
         SuccessValue = ''
         FailValue = ''
         UserField = 'UserPrincipalName'
-        UserFallback = 'UserId'
-        OpField = 'SkuPartNumber'
-        WlField = 'Workload'
+        UserFallback = ''
+        OpField = 'DisplayName'
+        WlField = ''
         IpField = ''
         TimeField = 'TimeGenerated'
         ShortName = 'Licenses'
         DisplayName = 'Assigned Licenses'
+        Description = 'Microsoft 365 许可证分配记录，记录用户被分配的许可证类型和分配时间'
+        DescriptionJa = 'Microsoft 365 ライセンス割り当て記録。ユーザーに割り当てられたライセンスタイプと割り当て時間を記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'UserPrincipalName' = @{ zh = '用户主体名称'; ja = 'ユーザープリンシパル名'; en = 'User Principal Name' }
+            'DisplayName' = @{ zh = '许可证名称'; ja = 'ライセンス名'; en = 'License display name' }
+            'SkuPartNumber' = @{ zh = '许可证SKU'; ja = 'ライセンスSKU'; en = 'License SKU' }
+            'ServicePlanName' = @{ zh = '服务计划名称'; ja = 'サービスプラン名'; en = 'Service plan name' }
+            'ProvisioningStatus' = @{ zh = '配置状态'; ja = 'プロビジョニング状態'; en = 'Provisioning status' }
+            'AppliesTo' = @{ zh = '适用对象'; ja = '適用対象'; en = 'Applies to' }
+        }
     }
     # AzureADUsersDCR_CL: no success/failure concept
     'AzureADUsersDCR_CL' = @{
         SuccessField = ''
         SuccessValue = ''
         FailValue = ''
-        UserField = 'UserPrincipalName'
-        UserFallback = 'UserId'
-        OpField = 'UserType'
-        WlField = 'Workload'
+        UserField = 'userPrincipalName'
+        UserFallback = 'displayName'
+        OpField = 'department'
+        WlField = ''
         IpField = ''
         TimeField = 'TimeGenerated'
         ShortName = 'AADUsers'
         DisplayName = 'Azure AD Users'
+        Description = 'Azure Active Directory 用户信息，记录用户属性、角色和状态变更'
+        DescriptionJa = 'Azure Active Directory ユーザー情報。ユーザー属性、ロール、状態の変更を記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'userPrincipalName' = @{ zh = '用户主体名称'; ja = 'ユーザープリンシパル名'; en = 'User Principal Name' }
+            'displayName' = @{ zh = '显示名称'; ja = '表示名'; en = 'Display name' }
+            'mail' = @{ zh = '邮箱地址'; ja = 'メールアドレス'; en = 'Mail address' }
+            'department' = @{ zh = '部门'; ja = '部門'; en = 'Department' }
+            'jobTitle' = @{ zh = '职位'; ja = '職位'; en = 'Job title' }
+            'companyName' = @{ zh = '公司名称'; ja = '会社名'; en = 'Company name' }
+            'officeLocation' = @{ zh = '办公位置'; ja = 'オフィス所在地'; en = 'Office location' }
+            'employeeId' = @{ zh = '员工ID'; ja = '従業員ID'; en = 'Employee ID' }
+            'accountEnabled' = @{ zh = '账户启用状态'; ja = 'アカウント有効状態'; en = 'Account enabled status' }
+            'businessPhones' = @{ zh = '商务电话'; ja = 'ビジネス電話'; en = 'Business phones' }
+        }
     }
     # MailboxStatisticsDCR_CL: no success/failure concept
     'MailboxStatisticsDCR_CL' = @{
@@ -93,27 +158,55 @@ $TableSchemas = @{
         SuccessValue = ''
         FailValue = ''
         UserField = 'UserPrincipalName'
-        UserFallback = 'UserId'
-        OpField = 'MailboxType'
-        WlField = 'Workload'
+        UserFallback = 'DisplayName'
+        OpField = 'RecipientTypeDetails'
+        WlField = ''
         IpField = ''
         TimeField = 'TimeGenerated'
         ShortName = 'Mailbox'
         DisplayName = 'Mailbox Statistics'
+        Description = 'Exchange 邮箱统计信息，记录邮箱大小、项目数量、最后访问时间等'
+        DescriptionJa = 'Exchange メールボックス統計情報。メールボックスサイズ、アイテム数、最終アクセス時間などを記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'UserPrincipalName' = @{ zh = '用户主体名称'; ja = 'ユーザープリンシパル名'; en = 'User Principal Name' }
+            'DisplayName' = @{ zh = '显示名称'; ja = '表示名'; en = 'Display name' }
+            'EmailAddress' = @{ zh = '邮箱地址'; ja = 'メールアドレス'; en = 'Email address' }
+            'RecipientTypeDetails' = @{ zh = '收件人类型详情'; ja = '受信者タイプの詳細'; en = 'Recipient type details' }
+            'TotalItemSize' = @{ zh = '总项目大小'; ja = '総アイテムサイズ'; en = 'Total item size' }
+            'TotalDeletedItemSize' = @{ zh = '总删除项目大小'; ja = '総削除アイテムサイズ'; en = 'Total deleted item size' }
+            'AvailableSpaceGB' = @{ zh = '可用空间(GB)'; ja = '利用可能領域(GB)'; en = 'Available space (GB)' }
+            'QuotaLimitGB' = @{ zh = '配额限制(GB)'; ja = 'クォータ制限(GB)'; en = 'Quota limit (GB)' }
+        }
     }
-    # WQCLogDCR_CL: use Result field
+    # WQCLogDCR_CL: use OperationType field
     'WQCLogDCR_CL' = @{
-        SuccessField = 'Result'
-        SuccessValue = 'Success'
-        FailValue = 'Failure'
-        UserField = 'UserId'
-        UserFallback = 'UserUPN'
-        OpField = 'Operation'
-        WlField = 'Workload'
-        IpField = 'ClientIP'
+        SuccessField = ''
+        SuccessValue = ''
+        FailValue = ''
+        UserField = 'CurrentUsername'
+        UserFallback = 'CurrentMail'
+        OpField = 'OperationType'
+        WlField = ''
+        IpField = ''
         TimeField = 'TimeGenerated'
         ShortName = 'WQC'
         DisplayName = 'WQC Log'
+        Description = 'WQC (Workplace Quality Control) 日志，记录质量检查操作和结果'
+        DescriptionJa = 'WQC (Workplace Quality Control) ログ。品質チェック操作と結果を記録'
+        Fields = @{
+            'TimeGenerated' = @{ zh = '日志生成时间'; ja = 'ログ生成時間'; en = 'Log generation time' }
+            'CurrentMail' = @{ zh = '当前用户邮箱'; ja = '現在のユーザーメール'; en = 'Current user email' }
+            'CurrentUsername' = @{ zh = '当前用户名'; ja = '現在のユーザー名'; en = 'Current username' }
+            'OperationType' = @{ zh = '操作类型'; ja = '操作タイプ'; en = 'Operation type' }
+            'InboxRuleName' = @{ zh = '收件箱规则名'; ja = '受信トレイルール名'; en = 'Inbox rule name' }
+            'ExceptIfFrom' = @{ zh = '排除发件人'; ja = '除外送信元'; en = 'Exclude from sender' }
+            'ExceptIfSentTo' = @{ zh = '排除收件人'; ja = '除外送信先'; en = 'Exclude to recipient' }
+            'ForwardtoMail' = @{ zh = '转发邮箱'; ja = '転送先メール'; en = 'Forward to email' }
+            'ForwardtoUsername' = @{ zh = '转发用户名'; ja = '転送先ユーザー名'; en = 'Forward to username' }
+            'WQCDate' = @{ zh = 'WQC日期'; ja = 'WQC日付'; en = 'WQC date' }
+            'Id' = @{ zh = '记录ID'; ja = 'レコードID'; en = 'Record ID' }
+        }
     }
 }
 
@@ -159,7 +252,7 @@ function Get-FieldValue {
 function Get-User {
     param([object]$Row)
     $u = Get-FieldValue -Row $Row -FieldName $schema.UserField
-    if (-not $u) { $u = Get-FieldValue -Row $Row -FieldName $schema.UserFallback }
+    if (-not $u -and $schema.UserFallback) { $u = Get-FieldValue -Row $Row -FieldName $schema.UserFallback }
     if (-not $u) { $u = 'Unknown' }
     return $u
 }
@@ -177,10 +270,13 @@ $uniqueOps = ($allOps | Select-Object -Unique).Count
 
 # Workload distribution
 $workloadMap = @{}
-foreach ($row in $data) {
-    $wl = Get-FieldValue -Row $row -FieldName $schema.WlField
-    if (-not $wl) { $wl = 'Unknown' }
-    $workloadMap[$wl] = ($workloadMap[$wl] + 1)
+$hasWorkload = ($schema.WlField -ne '')
+if ($hasWorkload) {
+    foreach ($row in $data) {
+        $wl = Get-FieldValue -Row $row -FieldName $schema.WlField
+        if (-not $wl) { $wl = 'Unknown' }
+        $workloadMap[$wl] = ($workloadMap[$wl] + 1)
+    }
 }
 
 # Top users
@@ -200,10 +296,13 @@ $topOps = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object
 
 # Top ClientIPs
 $ipMap = @{}
-foreach ($row in $data) {
-    $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
-    if (-not $ip) { $ip = 'Unknown' }
-    $ipMap[$ip] = ($ipMap[$ip] + 1)
+$hasIP = ($schema.IpField -ne '')
+if ($hasIP) {
+    foreach ($row in $data) {
+        $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
+        if (-not $ip) { $ip = 'Unknown' }
+        $ipMap[$ip] = ($ipMap[$ip] + 1)
+    }
 }
 $topIPs = $ipMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10
 
@@ -234,6 +333,9 @@ else {
     # Table has no success/failure concept - all unknown
     $unknownCount = $totalEvents
 }
+
+# Flag: does this table have success/failure status?
+$hasStatus = ($successField -ne '')
 
 # Activity timeline (by hour)
 $hourMap = @{}
@@ -538,9 +640,141 @@ for ($i = 0; $i -lt $previewRows; $i++) {
     $op = Get-FieldValue -Row $row -FieldName $schema.OpField
     $wl = Get-FieldValue -Row $row -FieldName $schema.WlField
     $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
-    $success = Get-FieldValue -Row $row -FieldName $successField
-    $tableRows += "<tr><td>$i</td><td>$(EscapeHtml $tg)</td><td class='op-cell' data-op='$(EscapeHtml $op)'>$(EscapeHtml $op)</td><td>$(EscapeHtml $user)</td><td>$(EscapeHtml $wl)</td><td>$(EscapeHtml $ip)</td><td class='status-$(EscapeHtml $success)'>$(EscapeHtml $success)</td></tr>`n"
+    
+    # Build row cells based on available fields
+    $cells = "<td>$i</td><td>$(EscapeHtml $tg)</td><td class='op-cell' data-op='$(EscapeHtml $op)'>$(EscapeHtml $op)</td><td>$(EscapeHtml $user)</td>"
+    if ($hasWorkload) { $cells += "<td>$(EscapeHtml $wl)</td>" }
+    if ($hasIP) { $cells += "<td>$(EscapeHtml $ip)</td>" }
+    if ($hasStatus) {
+        $success = Get-FieldValue -Row $row -FieldName $successField
+        $cells += "<td class='status-$(EscapeHtml $success)'>$(EscapeHtml $success)</td>"
+    }
+    $tableRows += "<tr>$cells</tr>`n"
 }
+
+# ============================================================
+# AI Analysis - Generate insights from log data
+# ============================================================
+Write-Host "Generating AI analysis..." -ForegroundColor Cyan
+
+$aiInsights = @()
+
+# Insight 1: Activity pattern analysis
+if ($timelineSorted.Count -gt 0) {
+    $peakHour = $timelineSorted | Sort-Object Value -Descending | Select-Object -First 1
+    $aiInsights += @{
+        type = 'activity'
+        severity = 'info'
+        title_zh = '活动高峰时段'
+        title_ja = 'アクティビティピーク時間'
+        content_zh = "日志活动高峰时段为 $($peakHour.Name)，共 $($peakHour.Value) 条记录。建议关注该时段的异常活动。"
+        content_ja = "ログアクティビティのピーク時間は $($peakHour.Name) で、$($peakHour.Value) 件の記録があります。この時間帯の異常アクティビティに注意してください。"
+    }
+}
+
+# Insight 2: Top user analysis
+if ($topUsers.Count -gt 0) {
+    $topUser = $topUsers | Select-Object -First 1
+    $aiInsights += @{
+        type = 'user'
+        severity = 'info'
+        title_zh = '最活跃用户'
+        title_ja = '最もアクティブなユーザー'
+        content_zh = "用户 $($topUser.Name) 是最活跃用户，共执行 $($topUser.Value) 次操作。建议定期审查高活跃用户权限。"
+        content_ja = "ユーザー $($topUser.Name) が最もアクティブで、$($topUser.Value) 回の操作を実行しました。高アクティブユーザーの権限を定期的にレビューしてください。"
+    }
+}
+
+# Insight 3: Failure rate analysis
+if ($totalEvents -gt 0 -and $successField) {
+    $failRate = [math]::Round(($failCount / $totalEvents) * 100, 2)
+    if ($failRate -gt 10) {
+        $aiInsights += @{
+            type = 'failure'
+            severity = 'high'
+            title_zh = '高失败率警告'
+            title_ja = '高失敗率警告'
+            content_zh = "操作失败率为 $failRate% ($failCount/$totalEvents)，超过10%阈值。建议立即调查失败原因。"
+            content_ja = "操作失敗率は $failRate% ($failCount/$totalEvents) で、10%の閾値を超えています。失敗理由を直ちに調査してください。"
+        }
+    }
+}
+
+# Insight 4: Workload concentration
+if ($workloadMap.Count -gt 0) {
+    $topWl = $workloadMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1
+    $wlPct = [math]::Round(($topWl.Value / $totalEvents) * 100, 1)
+    $aiInsights += @{
+        type = 'workload'
+        severity = 'info'
+        title_zh = '工作负载集中度'
+        title_ja = 'ワークロード集中度'
+        content_zh = "$($topWl.Name) 是主要工作负载，占总活动的 $wlPct%。建议重点关注该服务的安全配置。"
+        content_ja = "$($topWl.Name) が主要なワークロードで、全アクティビティの $wlPct% を占めています。このサービスのセキュリティ設定に重点的に注意してください。"
+    }
+}
+
+# Insight 5: Off-hours activity
+if ($offHoursEvents.Count -gt 0) {
+    $offHoursPct = [math]::Round(($offHoursEvents.Count / $totalEvents) * 100, 1)
+    $aiInsights += @{
+        type = 'offhours'
+        severity = 'medium'
+        title_zh = '非工作时间活动'
+        title_ja = '時間外アクティビティ'
+        content_zh = "检测到 $($offHoursEvents.Count) 条非工作时间活动记录 (00:00-07:00)，占总活动的 $offHoursPct%。建议审查这些操作是否合规。"
+        content_ja = "時間外アクティビティ (00:00-07:00) が $($offHoursEvents.Count) 件検出され、全アクティビティの $offHoursPct% を占めています。これらの操作がコンプライアンスに準拠しているかレビューしてください。"
+    }
+}
+
+# Insight 6: Suspicious IP detection
+if ($suspiciousIPs.Count -gt 0) {
+    $aiInsights += @{
+        type = 'security'
+        severity = 'high'
+        title_zh = '可疑IP检测'
+        title_ja = '不審なIP検出'
+        content_zh = "发现 $($suspiciousIPs.Count) 个可疑IP地址，这些IP访问了多个工作负载。建议立即调查这些IP的来源和活动。"
+        content_ja = "$($suspiciousIPs.Count) 件の不審なIPアドレスが発見されました。これらのIPは複数のワークロードにアクセスしています。IPのソースとアクティビティを直ちに調査してください。"
+    }
+}
+
+# Convert AI insights to JSON
+$aiInsightsJson = "["
+$aiFirst = $true
+foreach ($insight in $aiInsights) {
+    if (-not $aiFirst) { $aiInsightsJson += ',' }
+    $aiInsightsJson += '{'
+    $aiInsightsJson += '"type":"' + $insight.type + '",'
+    $aiInsightsJson += '"severity":"' + $insight.severity + '",'
+    $aiInsightsJson += '"title_zh":"' + ($insight.title_zh -replace '"', '\"') + '",'
+    $aiInsightsJson += '"title_ja":"' + ($insight.title_ja -replace '"', '\"') + '",'
+    $aiInsightsJson += '"content_zh":"' + ($insight.content_zh -replace '"', '\"') + '",'
+    $aiInsightsJson += '"content_ja":"' + ($insight.content_ja -replace '"', '\"') + '"'
+    $aiInsightsJson += '}'
+    $aiFirst = $false
+}
+$aiInsightsJson += "]"
+
+# Build field dictionary JSON
+$fieldsJson = "{"
+$fFirst = $true
+foreach ($fieldName in $schema.Fields.Keys | Sort-Object) {
+    if (-not $fFirst) { $fieldsJson += ',' }
+    $f = $schema.Fields[$fieldName]
+    $fieldsJson += '"' + $fieldName + '":{'
+    $fieldsJson += '"zh":"' + ($f.zh -replace '"', '\"') + '",'
+    $fieldsJson += '"ja":"' + ($f.ja -replace '"', '\"') + '",'
+    $fieldsJson += '"en":"' + ($f.en -replace '"', '\"') + '"'
+    $fieldsJson += '}'
+    $fFirst = $false
+}
+$fieldsJson += "}"
+
+# Build Azure Log Analytics query URL
+$workspaceId = '703a5771-97fc-4bf3-a585-f607d18c4479'
+$azurePortalUrl = "https://portal.azure.cn/#@$($tenantId)/resource/subscriptions/$subscriptionId/resourceGroups/$resourceGroupName/providers/Microsoft.OperationalInsights/workspaces/$workspaceId/logs"
+$queryUrl = "$azurePortalUrl?query=$tableType"
 
 # Determine risk count
 $riskCount = 0
@@ -660,13 +894,48 @@ tr:hover td { background: var(--bg-tertiary); }
 </div>
 
 <div class="header">
-  <h1>Audit General Report</h1>
-  <div class="subtitle" data-i18n="subtitle">Office365 审计日志分析报告</div>
+  <h1>$($schema.DisplayName) Report</h1>
+  <div class="subtitle" data-i18n="subtitle">$($schema.Description)</div>
   <div class="meta-tags">
     <span class="meta-tag">查询时间段: $analysisDate</span>
     <span class="meta-tag">Total Records: $totalEvents</span>
-    <span class="meta-tag">Source: General_20260508.csv</span>
+    <span class="meta-tag">Source Table: $tableType</span>
+    <span class="meta-tag"><a href="$queryUrl" target="_blank" style="color:var(--accent);text-decoration:underline;">在 Azure 门户中查看日志</a></span>
   </div>
+</div>
+
+<!-- Table Info Section -->
+<div class="section" id="table-info-section">
+  <h2 data-i18n="tableInfo">日志表信息</h2>
+  <table class="risk-table">
+    <tbody>
+      <tr><th style="width:150px;">日志表名称</th><td>$tableType</td></tr>
+      <tr><th>说明 (CN)</th><td>$($schema.Description)</td></tr>
+      <tr><th>説明 (JP)</th><td>$($schema.DescriptionJa)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- Field Dictionary Section -->
+<div class="section" id="field-dict-section">
+  <h2 data-i18n="fieldDict">字段字典</h2>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;" data-i18n="fieldDictDesc">日志表中各字段的含义</p>
+  <table class="risk-table">
+    <thead><tr>
+      <th>字段名 (EN)</th>
+      <th>说明 (CN)</th>
+      <th>説明 (JP)</th>
+      <th>Description</th>
+    </tr></thead>
+    <tbody id="field-dict-body"></tbody>
+  </table>
+</div>
+
+<!-- AI Analysis Section -->
+<div class="section" id="ai-analysis-section">
+  <h2 data-i18n="aiAnalysis">AI 智能分析</h2>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;" data-i18n="aiAnalysisDesc">基于日志数据的自动分析结论</p>
+  <div id="ai-analysis-content"></div>
 </div>
 
 <div class="glossary-section">
@@ -701,6 +970,7 @@ tr:hover td { background: var(--bg-tertiary); }
     <div class="label" data-i18n="workloads">工作负载</div>
     <div class="value green">$($workloadMap.Count)</div>
   </div>
+$(if($hasStatus){@"
   <div class="summary-card">
     <div class="label" data-i18n="success">成功</div>
     <div class="value green">$successCount</div>
@@ -709,6 +979,7 @@ tr:hover td { background: var(--bg-tertiary); }
     <div class="label" data-i18n="failed">失败</div>
     <div class="value red">$failCount</div>
   </div>
+"@})
 </div>
 
 <div class="section">
@@ -716,7 +987,7 @@ tr:hover td { background: var(--bg-tertiary); }
   <div id="timeline-chart"></div>
 </div>
 
-<div class="section">
+<div class="section" id="workload-section" style="display: $(if($hasWorkload){'block'}else{'none'});">
   <h2 data-i18n="workloadDist">工作负载分布</h2>
   <div id="donut-chart"></div>
 </div>
@@ -731,12 +1002,12 @@ tr:hover td { background: var(--bg-tertiary); }
   <div id="ops-chart" class="bar-chart"></div>
 </div>
 
-<div class="section">
+<div class="section" id="ip-section" style="display: $(if($hasIP){'block'}else{'none'});">
   <h2 data-i18n="topIPs">客户端 IP 排行</h2>
   <div id="ips-chart" class="bar-chart"></div>
 </div>
 
-<div class="section">
+<div class="section" id="success-ratio-section" style="display: $(if($hasStatus){'block'}else{'none'});">
   <h2 data-i18n="successRatio">成功/失败比率</h2>
   <div id="success-ratio"></div>
 </div>
@@ -759,9 +1030,9 @@ tr:hover td { background: var(--bg-tertiary); }
             <th onclick="sortTable(1)" data-i18n="time">时间</th>
             <th onclick="sortTable(2)" data-i18n="operation">操作</th>
             <th onclick="sortTable(3)" data-i18n="user">用户</th>
-            <th onclick="sortTable(4)" data-i18n="workload">工作负载</th>
-            <th onclick="sortTable(5)" data-i18n="clientIP">IP</th>
-            <th onclick="sortTable(6)" data-i18n="status">状态</th>
+$(if($hasWorkload){'            <th onclick="sortTable(4)" data-i18n="workload">工作负载</th>'})
+$(if($hasIP){'            <th onclick="sortTable(5)" data-i18n="clientIP">IP</th>'})
+$(if($hasStatus){'            <th onclick="sortTable(6)" data-i18n="status">状态</th>'})
           </tr>
         </thead>
         <tbody id="table-body">
@@ -794,7 +1065,9 @@ const i18n = {
     "failedOps":"失败操作","suspiciousIPs":"可疑 IP","offHours":"非工作时间活动",
     "highPrivOps":"高权限操作","sensitiveData":"敏感数据事件","ipVelocity":"IP 多用户关联",
     "serviceAccounts":"服务账户活动","low":"低风险","medium":"中风险","high":"高风险",
-    "offHoursUsers":"非工作时活跃用户","failedOpSummary":"失败操作汇总","count":"次数"
+    "offHoursUsers":"非工作时活跃用户","failedOpSummary":"失败操作汇总","count":"次数",
+    "tableInfo":"日志表信息","fieldDict":"字段字典","fieldDictDesc":"日志表中各字段的含义",
+    "aiAnalysis":"AI 智能分析","aiAnalysisDesc":"基于日志数据的自动分析结论"
   },
   ja: {
     "totalEvents":"総イベント数","uniqueUsers":"ユニークユーザー","uniqueOps":"ユニーク操作","workloads":"ワークロード",
@@ -809,7 +1082,9 @@ const i18n = {
     "failedOps":"失敗した操作","suspiciousIPs":"不審な IP","offHours":"時間外のアクティビティ",
     "highPrivOps":"高権限操作","sensitiveData":"機密データイベント","ipVelocity":"IP 複数ユーザー",
     "serviceAccounts":"サービスアカウント","low":"低リスク","medium":"中リスク","high":"高リスク",
-    "offHoursUsers":"時間外アクティブユーザー","failedOpSummary":"失敗操作まとめ","count":"回数"
+    "offHoursUsers":"時間外アクティブユーザー","failedOpSummary":"失敗操作まとめ","count":"回数",
+    "tableInfo":"ログテーブル情報","fieldDict":"フィールド辞書","fieldDictDesc":"ログテーブルの各フィールドの意味",
+    "aiAnalysis":"AI 分析","aiAnalysisDesc":"ログデータに基づく自動分析結果"
   }
 };
 
@@ -1106,6 +1381,45 @@ function buildRiskSection() {
   container.innerHTML = html;
 }
 
+// ===== Field Dictionary =====
+const fieldsData = $fieldsJson;
+
+function renderFieldDictionary() {
+  const tbody = document.getElementById('field-dict-body');
+  if (!tbody) return;
+  let html = '';
+  const keys = Object.keys(fieldsData).sort();
+  keys.forEach(field => {
+    const f = fieldsData[field];
+    html += '<tr><td><code>' + field + '</code></td><td>' + f.zh + '</td><td>' + f.ja + '</td><td>' + f.en + '</td></tr>';
+  });
+  tbody.innerHTML = html;
+}
+
+// ===== AI Analysis =====
+const aiData = $aiInsightsJson;
+
+function renderAIAnalysis() {
+  const container = document.getElementById('ai-analysis-content');
+  if (!container || !aiData || aiData.length === 0) {
+    if (container) container.innerHTML = '<p style="color:var(--text-secondary)">No AI analysis available.</p>';
+    return;
+  }
+  let html = '';
+  aiData.forEach(insight => {
+    const severityClass = insight.severity === 'high' ? 'risk-high' : insight.severity === 'medium' ? 'risk-medium' : 'risk-low';
+    const title = currentLang === 'zh' ? insight.title_zh : insight.title_ja;
+    const content = currentLang === 'zh' ? insight.content_zh : insight.content_ja;
+    html += '<div style="margin-bottom:16px;padding:16px;background:var(--bg-tertiary);border-radius:8px;border-left:4px solid var(--accent-' + (insight.severity === 'high' ? 'red' : insight.severity === 'medium' ? 'orange' : 'green') + ')">';
+    html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">';
+    html += '<span class="risk-badge ' + severityClass + '">' + title + '</span>';
+    html += '</div>';
+    html += '<p style="color:var(--text-secondary);font-size:13px;line-height:1.6;">' + content + '</p>';
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', function() {
   renderTimeline('timeline-chart', $timelineJson);
@@ -1113,9 +1427,15 @@ document.addEventListener('DOMContentLoaded', function() {
   renderBarChart('users-chart', $topUsersJson, 15);
   renderBarChart('ops-chart', $topOpsJson, 15);
   renderBarChart('ips-chart', $topIPsJson, 10);
-  renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
+  $(if($hasStatus){
+    "renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);"
+  }else{
+    "// No success/failure status for this table - hiding ratio chart`n  document.getElementById('success-ratio').parentElement.style.display = 'none';"
+  })
   initPagination();
   buildRiskSection();
+  renderFieldDictionary();
+  renderAIAnalysis();
 });
 </script>
 </body>
