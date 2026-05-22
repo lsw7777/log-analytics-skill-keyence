@@ -12,29 +12,174 @@ param(
     [string]$AnalysisDate = "$(Get-Date -Format 'yyyy-MM-dd')"
 )
 
+# ============================================================
+# Table Schema Mapping - defines how to extract success/failure
+# status from different DCR_CL tables
+# ============================================================
+$TableSchemas = @{
+    # AuditGeneralDCR_CL: has IsSuccess field
+    'AuditGeneralDCR_CL' = @{
+        SuccessField = 'IsSuccess'
+        SuccessValue = 'true'
+        FailValue = 'false'
+        UserField = 'UserUPN'
+        UserFallback = 'UserId'
+        OpField = 'Operation'
+        WlField = 'Workload'
+        IpField = 'ClientIP'
+        TimeField = 'TimeGenerated'
+        ShortName = 'General'
+        DisplayName = 'Audit General'
+    }
+    # SharePointAuditDCR_CL: no IsSuccess field, use ResultStatus
+    'SharePointAuditDCR_CL' = @{
+        SuccessField = 'ResultStatus'
+        SuccessValue = '0'
+        FailValue = '1'
+        UserField = 'UserId'
+        UserFallback = 'UserKey'
+        OpField = 'Operation'
+        WlField = 'Workload'
+        IpField = 'ClientIP'
+        TimeField = 'TimeGenerated'
+        ShortName = 'SPAudit'
+        DisplayName = 'SharePoint Audit'
+    }
+    # MessageTraceDataDCR_CL: use Status field
+    'MessageTraceDataDCR_CL' = @{
+        SuccessField = 'Status'
+        SuccessValue = 'Delivered'
+        FailValue = 'Failed'
+        UserField = 'Sender'
+        UserFallback = 'Recipient'
+        OpField = 'Status'
+        WlField = 'Workload'
+        IpField = 'ClientIP'
+        TimeField = 'TimeGenerated'
+        ShortName = 'MsgTrace'
+        DisplayName = 'Message Trace'
+    }
+    # AssignedLicensesDCR_CL: no success/failure concept
+    'AssignedLicensesDCR_CL' = @{
+        SuccessField = ''
+        SuccessValue = ''
+        FailValue = ''
+        UserField = 'UserPrincipalName'
+        UserFallback = 'UserId'
+        OpField = 'SkuPartNumber'
+        WlField = 'Workload'
+        IpField = ''
+        TimeField = 'TimeGenerated'
+        ShortName = 'Licenses'
+        DisplayName = 'Assigned Licenses'
+    }
+    # AzureADUsersDCR_CL: no success/failure concept
+    'AzureADUsersDCR_CL' = @{
+        SuccessField = ''
+        SuccessValue = ''
+        FailValue = ''
+        UserField = 'UserPrincipalName'
+        UserFallback = 'UserId'
+        OpField = 'UserType'
+        WlField = 'Workload'
+        IpField = ''
+        TimeField = 'TimeGenerated'
+        ShortName = 'AADUsers'
+        DisplayName = 'Azure AD Users'
+    }
+    # MailboxStatisticsDCR_CL: no success/failure concept
+    'MailboxStatisticsDCR_CL' = @{
+        SuccessField = ''
+        SuccessValue = ''
+        FailValue = ''
+        UserField = 'UserPrincipalName'
+        UserFallback = 'UserId'
+        OpField = 'MailboxType'
+        WlField = 'Workload'
+        IpField = ''
+        TimeField = 'TimeGenerated'
+        ShortName = 'Mailbox'
+        DisplayName = 'Mailbox Statistics'
+    }
+    # WQCLogDCR_CL: use Result field
+    'WQCLogDCR_CL' = @{
+        SuccessField = 'Result'
+        SuccessValue = 'Success'
+        FailValue = 'Failure'
+        UserField = 'UserId'
+        UserFallback = 'UserUPN'
+        OpField = 'Operation'
+        WlField = 'Workload'
+        IpField = 'ClientIP'
+        TimeField = 'TimeGenerated'
+        ShortName = 'WQC'
+        DisplayName = 'WQC Log'
+    }
+}
+
+# ============================================================
+# Detect table type from CSV first row
+# ============================================================
+function Detect-TableType {
+    param([array]$Data)
+    if ($Data.Count -eq 0) { return 'AuditGeneralDCR_CL' }
+    $firstRow = $Data[0]
+    foreach ($schema in $TableSchemas.Keys) {
+        $fields = $TableSchemas[$schema]
+        $userField = $fields.UserField
+        if ($firstRow.PSObject.Properties.Name -contains $userField) {
+            return $schema
+        }
+    }
+    return 'AuditGeneralDCR_CL'
+}
+
 Write-Host "Loading CSV data..." -ForegroundColor Cyan
 $data = Import-Csv -Path $csvPath -Encoding UTF8
 $totalEvents = $data.Count
 Write-Host "Loaded $totalEvents records" -ForegroundColor Green
 
+# Detect table type and get schema
+$tableType = Detect-TableType -Data $data
+$schema = $TableSchemas[$tableType]
+Write-Host "Detected table: $tableType ($($schema.DisplayName))" -ForegroundColor Cyan
+
 Write-Host "Computing statistics..." -ForegroundColor Cyan
+
+# Helper: get field value from row using schema
+function Get-FieldValue {
+    param([object]$Row, [string]$FieldName)
+    if (-not $FieldName) { return '' }
+    $val = $Row.$FieldName
+    if ($val -eq $null) { return '' }
+    return $val.ToString()
+}
+
+# Helper: get user from row using schema
+function Get-User {
+    param([object]$Row)
+    $u = Get-FieldValue -Row $Row -FieldName $schema.UserField
+    if (-not $u) { $u = Get-FieldValue -Row $Row -FieldName $schema.UserFallback }
+    if (-not $u) { $u = 'Unknown' }
+    return $u
+}
 
 # Unique users
 $allUsers = @()
 foreach ($row in $data) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
-    $allUsers += $u
+    $allUsers += Get-User -Row $row
 }
 $uniqueUsers = ($allUsers | Select-Object -Unique).Count
 
 # Unique operations
-$allOps = @($data | ForEach-Object { $_.Operation })
+$allOps = @($data | ForEach-Object { Get-FieldValue -Row $_ -FieldName $schema.OpField })
 $uniqueOps = ($allOps | Select-Object -Unique).Count
 
 # Workload distribution
 $workloadMap = @{}
 foreach ($row in $data) {
-    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    $wl = Get-FieldValue -Row $row -FieldName $schema.WlField
+    if (-not $wl) { $wl = 'Unknown' }
     $workloadMap[$wl] = ($workloadMap[$wl] + 1)
 }
 
@@ -56,20 +201,38 @@ $topOps = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object
 # Top ClientIPs
 $ipMap = @{}
 foreach ($row in $data) {
-    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { 'Unknown' }
+    $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
+    if (-not $ip) { $ip = 'Unknown' }
     $ipMap[$ip] = ($ipMap[$ip] + 1)
 }
 $topIPs = $ipMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10
 
-# Success/Failure
+# Success/Failure - using schema-based field mapping
 $successCount = 0
 $failCount = 0
 $unknownCount = 0
-foreach ($row in $data) {
-    $s = $row.IsSuccess
-    if ($s -eq 'true') { $successCount++ }
-    elseif ($s -eq 'false') { $failCount++ }
-    else { $unknownCount++ }
+$successField = $schema.SuccessField
+$successValue = $schema.SuccessValue
+$failValue = $schema.FailValue
+
+if ($successField) {
+    # Table has success/failure field
+    foreach ($row in $data) {
+        $s = Get-FieldValue -Row $row -FieldName $successField
+        if ($successValue -and $s -eq $successValue) {
+            $successCount++
+        }
+        elseif ($failValue -and $s -eq $failValue) {
+            $failCount++
+        }
+        else {
+            $unknownCount++
+        }
+    }
+}
+else {
+    # Table has no success/failure concept - all unknown
+    $unknownCount = $totalEvents
 }
 
 # Activity timeline (by hour)
@@ -101,50 +264,57 @@ foreach ($row in $data) {
     }
 }
 
-# Failed operations details
-$failedEvents = @($data | Where-Object { $_.IsSuccess -eq 'false' })
+# Failed operations details - using schema-based field mapping
+$failedEvents = @()
+if ($successField -and $failValue) {
+    $failedEvents = @($data | Where-Object { (Get-FieldValue -Row $_ -FieldName $successField) -eq $failValue })
+}
 $failedByOp = @{}
 foreach ($row in $failedEvents) {
-    $op = if ($row.Operation) { $row.Operation } else { 'Unknown' }
+    $op = Get-FieldValue -Row $row -FieldName $schema.OpField
+    if (-not $op) { $op = 'Unknown' }
     $failedByOp[$op] = ($failedByOp[$op] + 1)
 }
 $failedByOp = $failedByOp.GetEnumerator() | Sort-Object Value -Descending
 
-# High-privilege operations
+# High-privilege operations - using schema-based field mapping
 $highPrivOps = @('ExportReport', 'Search', 'EditDataset', 'Delete', 'DeleteDataset', 'DeleteReport', 'DeleteWorkspace', 'AdminAction')
-$highPrivEvents = @($data | Where-Object { $highPrivOps -contains $_.Operation })
+$highPrivEvents = @($data | Where-Object { $highPrivOps -contains (Get-FieldValue -Row $_ -FieldName $schema.OpField) })
 $highPrivByUser = @{}
 foreach ($row in $highPrivEvents) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
-    $key = "$u | $($row.Operation)"
+    $u = Get-User -Row $row
+    $op = Get-FieldValue -Row $row -FieldName $schema.OpField
+    $key = "$u | $op"
     $highPrivByUser[$key] = ($highPrivByUser[$key] + 1)
 }
 $highPrivByUser = $highPrivByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 20
 
-# Sensitive data events
+# Sensitive data events - using schema-based field mapping
 $sensitiveOps = @('SensitivityLabeledFileOpened', 'SensitivityLabeledFileRenamed', 'IrmContent', 'AppliedSensitivityLabel', 'ChangedSensitivityLabel')
-$sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains $_.Operation })
+$sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains (Get-FieldValue -Row $_ -FieldName $schema.OpField) })
 $sensitiveByOp = @{}
 foreach ($row in $sensitiveEvents) {
-    $op = $row.Operation
+    $op = Get-FieldValue -Row $row -FieldName $schema.OpField
     $sensitiveByOp[$op] = ($sensitiveByOp[$op] + 1)
 }
 $sensitiveByOp = $sensitiveByOp.GetEnumerator() | Sort-Object Value -Descending
 
-# Service account activity (GUIDs starting with 0000-...)
-$serviceAcctEvents = @($data | Where-Object { $_.UserId -match '^00000009-' })
+# Service account activity (GUIDs starting with 0000-...) - using schema-based field mapping
+$serviceAcctEvents = @($data | Where-Object { (Get-FieldValue -Row $_ -FieldName $schema.UserFallback) -match '^00000009-' })
 $serviceAcctByOp = @{}
 foreach ($row in $serviceAcctEvents) {
-    $op = if ($row.Operation) { $row.Operation } else { 'Unknown' }
+    $op = Get-FieldValue -Row $row -FieldName $schema.OpField
+    if (-not $op) { $op = 'Unknown' }
     $serviceAcctByOp[$op] = ($serviceAcctByOp[$op] + 1)
 }
 $serviceAcctByOp = $serviceAcctByOp.GetEnumerator() | Sort-Object Value -Descending
 
-# IP velocity - single IP with multiple users
+# IP velocity - single IP with multiple users - using schema-based field mapping
 $ipUsers = @{}
 foreach ($row in $data) {
-    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { continue }
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
+    if (-not $ip) { continue }
+    $u = Get-User -Row $row
     if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
     $ipUsers[$ip][$u] = 1
 }
@@ -161,13 +331,15 @@ foreach ($ip in $ipUsers.Keys) {
 }
 $ipVelocity = $ipVelocity | Sort-Object UserCount -Descending
 
-# Suspicious IPs (non-RFC1918 accessing multiple workloads)
+# Suspicious IPs (non-RFC1918 accessing multiple workloads) - using schema-based field mapping
 $ipWorkloads = @{}
 foreach ($row in $data) {
-    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { continue }
+    $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
+    if (-not $ip) { continue }
     # Skip RFC1918
     if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' -or $ip -eq 'Unknown' -or $ip -eq '0.0.0.0') { continue }
-    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    $wl = Get-FieldValue -Row $row -FieldName $schema.WlField
+    if (-not $wl) { $wl = 'Unknown' }
     if (-not $ipWorkloads.ContainsKey($ip)) { $ipWorkloads[$ip] = @{} }
     $ipWorkloads[$ip][$wl] = 1
 }
@@ -184,10 +356,10 @@ foreach ($ip in $ipWorkloads.Keys) {
 }
 $suspiciousIPs = $suspiciousIPs | Sort-Object WorkloadCount -Descending
 
-# Off-hours by user
+# Off-hours by user - using schema-based field mapping
 $offHoursByUser = @{}
 foreach ($row in $offHoursEvents) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $u = Get-User -Row $row
     $offHoursByUser[$u] = ($offHoursByUser[$u] + 1)
 }
 $offHoursByUser = $offHoursByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15
@@ -356,17 +528,17 @@ foreach ($wl in $wlGlossary.Keys | Sort-Object) {
 }
 $wlGlossaryJson += "}"
 
-# Build data table - first 500 rows
+# Build data table - first 500 rows - using schema-based field mapping
 $tableRows = ''
 $previewRows = [Math]::Min(500, $data.Count)
 for ($i = 0; $i -lt $previewRows; $i++) {
     $row = $data[$i]
-    $tg = if ($row.TimeGenerated) { $row.TimeGenerated } else { '' }
-    $user = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { '' }
-    $op = if ($row.Operation) { $row.Operation } else { '' }
-    $wl = if ($row.Workload) { $row.Workload } else { '' }
-    $ip = if ($row.ClientIP) { $row.ClientIP } else { '' }
-    $success = if ($row.IsSuccess) { $row.IsSuccess } else { '' }
+    $tg = Get-FieldValue -Row $row -FieldName $schema.TimeField
+    $user = Get-User -Row $row
+    $op = Get-FieldValue -Row $row -FieldName $schema.OpField
+    $wl = Get-FieldValue -Row $row -FieldName $schema.WlField
+    $ip = Get-FieldValue -Row $row -FieldName $schema.IpField
+    $success = Get-FieldValue -Row $row -FieldName $successField
     $tableRows += "<tr><td>$i</td><td>$(EscapeHtml $tg)</td><td class='op-cell' data-op='$(EscapeHtml $op)'>$(EscapeHtml $op)</td><td>$(EscapeHtml $user)</td><td>$(EscapeHtml $wl)</td><td>$(EscapeHtml $ip)</td><td class='status-$(EscapeHtml $success)'>$(EscapeHtml $success)</td></tr>`n"
 }
 
@@ -950,5 +1122,6 @@ document.addEventListener('DOMContentLoaded', function() {
 </html>
 "@
 
-$html | Out-File -FilePath $outputPath -Encoding UTF8
+# Use UTF8 with BOM to prevent garbled filenames on Windows
+[System.IO.File]::WriteAllText($outputPath, $html, [System.Text.UTF8Encoding]::new($true))
 Write-Host "Report saved to: $outputPath" -ForegroundColor Green
