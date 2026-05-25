@@ -1,11 +1,20 @@
 ---
 name: bulk-log-analyzer
-description: Analyze bulk Azure Log Analytics audit logs and generate comprehensive HTML reports. Data is exported to a temporary JSON file first to handle large datasets efficiently, then analyzed locally. Use when analyzing Office365 audit logs, viewing log statistics, generating log reports, or exploring activity patterns across time periods, users, or operations. Triggers for bulk log analysis, activity summaries, statistics generation, compliance reports, or any request to view multiple logs together.
+description: Analyze supported Azure Log Analytics DCR_CL logs and generate comprehensive HTML reports. Data is exported to a temporary CSV file first to handle large datasets efficiently, then analyzed locally. Use when analyzing Office365/Azure audit logs, viewing log statistics, generating log reports, or exploring activity patterns across time periods, users, or operations. Triggers for bulk log analysis, activity summaries, statistics generation, compliance reports, or any request to view multiple logs together.
 ---
 
 # Bulk Log Analyzer
 
-Analyze Office365 Audit General logs at scale and generate interactive, self-contained HTML reports.
+Analyze supported Log Analytics DCR_CL logs at scale and generate interactive, self-contained HTML reports.
+
+Supported tables:
+- `AssignedLicensesDCR_CL`
+- `AuditGeneralDCR_CL`
+- `AzureADUsersDCR_CL`
+- `MailboxStatisticsDCR_CL`
+- `MessageTraceDataDCR_CL`
+- `SharePointAuditDCR_CL`
+- `WQCLogDCR_CL`
 
 ## Prerequisites
 
@@ -21,8 +30,10 @@ Analyze Office365 Audit General logs at scale and generate interactive, self-con
 **Always** probe the current schema before writing analysis code, as fields evolve over time.
 
 ```bash
-powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | take 1" -Hours 48
+powershell -File ".\run-all.ps1"
 ```
+
+The runner displays interactive menus for selecting one supported table and a time range. Press Enter on the time range menu to query yesterday from `00:00:00` to today `00:00:00`.
 
 This returns a single record with all available columns. Note the field structure — these are Office365 Management Activity API objects ingested via custom DCR.
 
@@ -31,23 +42,24 @@ This returns a single record with all available columns. Note the field structur
 **Data may be large**, so always export to a temporary staging file first, then analyze the file rather than re-querying Azure.
 
 **Naming Convention:**
-- Format: `General_YYYYMMDD.csv`
+- CSV format: `<TableName>_YYYYMMDD.csv`
+- HTML format: `<TableName>_YYYYMMDD_HHmm.html`
 - Always include `YYYYMMDD` (the date the user asked to analyze, not the export date)
 - The file is placed in `$env:USERPROFILE\AppData\Local\Temp\opencode\`
 - Examples:
-  - `General_20260507.csv` — 用户要求分析 2026-05-07 的数据
-  - `General_202605_last7d.csv` — 最后 7 天
+  - `AuditGeneralDCR_CL_20260507.csv` — 用户要求分析 2026-05-07 的数据
+  - `AuditGeneralDCR_CL_20260508_0930.html` — 2026-05-08 09:30 生成的报告
 
 **Always use `-ExportCsv` in `azure_log_query.ps1`:**
 ```bash
-# Yesterday's data (use -Hours 24-48 depending on query)
-powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | where TimeGenerated >= datetime(2026-05-07T00:00:00Z) and TimeGenerated < datetime(2026-05-08T00:00:00Z) | sort by TimeGenerated desc" -Hours 48 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\logs_20260507.csv"
+# Interactive menu, default yesterday range
+powershell -File ".\run-all.ps1"
 
-# Last 24 hours
-powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | sort by TimeGenerated desc" -Hours 24 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\logs_20260508.csv"
+# Optional non-interactive single day execution for automation
+powershell -File ".\run-all.ps1" -TableName "AuditGeneralDCR_CL"
 
-# Custom KQL filter
-powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | where Workload == 'PowerBI' | sort by TimeGenerated desc" -Hours 168 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\logs_202605_powerbi.csv"
+# Optional non-interactive inclusive date range execution
+powershell -File ".\run-all.ps1" -TableName "AuditGeneralDCR_CL" -StartDate "2026-05-20" -EndDate "2026-05-24"
 ```
 
 **KQL tips:**
@@ -162,13 +174,13 @@ Create a **self-contained** HTML report using the **standard template** below. T
 
 **Technical Requirements (fixed across all reports):**
 - Single `.html` file — self-contained, no external network requests
-- CSS variables defined in `:root` for consistent theming — use the same color palette:
+- CSS variables defined in `:root` for consistent light theming — white background, black primary text, red risk text:
   ```css
-  --bg-primary: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
-  --border: #30363d; --text-primary: #e6edf3; --text-secondary: #8b949e;
-  --accent: #58a6ff; --accent-green: #3fb950; --accent-red: #f85149;
-  --accent-yellow: #d29922; --accent-purple: #bc8cff; --accent-orange: #f0883e;
-  --accent-cyan: #39d2c0;
+  --bg-primary: #ffffff; --bg-secondary: #ffffff; --bg-tertiary: #f6f8fa;
+  --border: #d0d7de; --text-primary: #111111; --text-secondary: #4b5563;
+  --accent: #0969da; --accent-green: #116329; --accent-red: #cf222e;
+  --accent-yellow: #9a6700; --accent-purple: #8250df; --accent-orange: #bc4c00;
+  --accent-cyan: #0550ae;
   ```
 - Chart colors: `#58a6ff, #3fb950, #bc8cff, #f0883e, #f85149, #39d2c0` (cycle through)
 - Font: `-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans JP', Helvetica, Arial, sans-serif`

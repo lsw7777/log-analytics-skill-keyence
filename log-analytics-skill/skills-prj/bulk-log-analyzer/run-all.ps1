@@ -4,7 +4,7 @@
 
 param(
     [Parameter(Mandatory = $false)]
-    [string]$TableName = "AuditGeneralDCR_CL",
+    [string]$TableName = "",
 
     [Parameter(Mandatory = $false)]
     [int]$Hours = 24,
@@ -25,14 +25,10 @@ param(
     [string]$AnalysisDate = "",
 
     [Parameter(Mandatory = $false)]
-    [switch]$UseYesterday = $true,
+    [string]$StartDate = "",
 
     [Parameter(Mandatory = $false)]
-    [ValidateSet("yesterday", "today", "last7days", "last30days", "custom")]
-    [string]$DateRange = "yesterday",
-
-    [Parameter(Mandatory = $false)]
-    [int]$DateOffset = -1,
+    [string]$EndDate = "",
 
     [Parameter(Mandatory = $false)]
     [string]$CustomStart = "",
@@ -44,104 +40,59 @@ param(
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $TempDir = "$env:USERPROFILE\AppData\Local\Temp\opencode"
 $CacheDir = "$TempDir\cache"
-$DateStr = Get-Date -Format "yyyyMMdd_HHmm"
+$Now = Get-Date
+. (Join-Path $ScriptDir 'log-analyzer-core.ps1')
 
-# Derive short name from table (e.g., AuditGeneralDCR_CL -> General)
-$ShortName = if ($TableName -match '^(.+)DCR_CL$') {
-    $matches[1] -replace 'AuditGeneral', 'General' -replace 'SharePointAudit', 'SPAudit' -replace 'MessageTraceData', 'MsgTrace' -replace 'AssignedLicenses', 'Licenses' -replace 'AzureADUsers', 'AADUsers' -replace 'MailboxStatistics', 'Mailbox'
+if (-not $TableName) {
+    $TableName = Select-LogTableInteractive
 } else {
-    $TableName -replace '_CL$', ''
+    $TableName = Resolve-LogTableSelection -Selection $TableName
 }
 
 # Determine analysis date and time range
-$now = Get-Date
-
-# Priority: CustomStart/CustomEnd > DateOffset > DateRange > UseYesterday > Hours
 if ($CustomStart -and $CustomEnd) {
-    # Custom time range
     $StartTime = [DateTime]::Parse($CustomStart)
     $EndTime = [DateTime]::Parse($CustomEnd)
     $AnalysisDateStr = $StartTime.ToString("yyyyMMdd")
+    $AnalysisDateDisplay = $StartTime.ToString("yyyy-MM-dd")
     Write-Host "Time range: Custom ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
 }
-elseif ($DateOffset -ne 0) {
-    # DateOffset: 0=today, -1=yesterday, -2=day before yesterday, etc.
-    $TargetDate = $now.Date.AddDays($DateOffset)
-    $TargetEnd = $TargetDate.AddDays(1).AddSeconds(-1)
-    $AnalysisDateStr = $TargetDate.ToString("yyyyMMdd")
-    $StartTime = $TargetDate
-    $EndTime = $TargetEnd
-    if ($DateOffset -eq -1) {
-        Write-Host "Time range: Yesterday ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
-    }
-    elseif ($DateOffset -eq 0) {
-        Write-Host "Time range: Today ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
-    }
-    else {
-        Write-Host "Time range: $([Math]::Abs($DateOffset)) day(s) ago ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
-    }
+elseif ($AnalysisDate) {
+    $range = Get-LogTimeRangeFromDates -StartDate $AnalysisDate -EndDate $AnalysisDate
+    $StartTime = $range.StartTime
+    $EndTime = $range.EndTime
+    $AnalysisDateStr = $range.AnalysisDateStr
+    $AnalysisDateDisplay = $range.AnalysisDateDisplay
+    Write-Host "Time range: $($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
 }
-elseif ($DateRange -ne "custom") {
-    # Preset date ranges
-    switch ($DateRange) {
-        "yesterday" {
-            $StartDate = $now.Date.AddDays(-1)
-            $EndDate = $StartDate.AddDays(1).AddSeconds(-1)
-            Write-Host "Time range: Yesterday" -ForegroundColor Cyan
-        }
-        "today" {
-            $StartDate = $now.Date
-            $EndDate = $now
-            Write-Host "Time range: Today (so far)" -ForegroundColor Cyan
-        }
-        "last7days" {
-            $StartDate = $now.Date.AddDays(-7)
-            $EndDate = $now
-            Write-Host "Time range: Last 7 days" -ForegroundColor Cyan
-        }
-        "last30days" {
-            $StartDate = $now.Date.AddDays(-30)
-            $EndDate = $now
-            Write-Host "Time range: Last 30 days" -ForegroundColor Cyan
-        }
+elseif ($StartDate -or $EndDate) {
+    if (-not $StartDate -or -not $EndDate) {
+        throw '-StartDate and -EndDate must be provided together.'
     }
-    $AnalysisDateStr = $StartDate.ToString("yyyyMMdd")
-    $StartTime = $StartDate
-    $EndTime = $EndDate
-    Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
-}
-elseif ($UseYesterday) {
-    # Yesterday 00:00:00 to 23:59:59 (adaptive, not hardcoded)
-    $yesterday = $now.Date.AddDays(-1)
-    $yesterdayEnd = $yesterday.AddDays(1).AddSeconds(-1)
-    $AnalysisDateStr = $yesterday.ToString("yyyyMMdd")
-    $StartTime = $yesterday
-    $EndTime = $yesterdayEnd
-    Write-Host "Time range: Yesterday ($($yesterday.ToString('yyyy-MM-dd HH:mm:ss')) to $($yesterdayEnd.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+    $range = Get-LogTimeRangeFromDates -StartDate $StartDate -EndDate $EndDate
+    $StartTime = $range.StartTime
+    $EndTime = $range.EndTime
+    $AnalysisDateStr = $range.AnalysisDateStr
+    $AnalysisDateDisplay = $range.AnalysisDateDisplay
+    Write-Host "Time range: $($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
 }
 else {
-    # Last N hours from now
-    if ($AnalysisDate) {
-        $AnalysisDateStr = $AnalysisDate -replace '-', ''
-    } else {
-        $AnalysisDateStr = $now.ToString("yyyyMMdd")
-    }
-    $StartTime = $now.AddHours(-$Hours)
-    $EndTime = $now
-    Write-Host "Time range: Last $Hours hours ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+    $range = Select-LogTimeRangeInteractive -Now $Now
+    $StartTime = $range.StartTime
+    $EndTime = $range.EndTime
+    $AnalysisDateStr = $range.AnalysisDateStr
+    $AnalysisDateDisplay = $range.AnalysisDateDisplay
+    Write-Host "Time range: $AnalysisDateDisplay ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
 }
 
 Write-Host "  StartTime ISO: $($StartTime.ToString('o'))" -ForegroundColor Cyan
 Write-Host "  EndTime ISO: $($EndTime.ToString('o'))" -ForegroundColor Cyan
 
-$CsvFile = "$TempDir\$($ShortName)_$AnalysisDateStr.csv"
-$HtmlFile = "$TempDir\$($ShortName)_$AnalysisDateStr.html"
-$CacheCsv = "$CacheDir\$($ShortName)_$AnalysisDateStr.csv"
-$CacheMeta = "$CacheDir\$($ShortName)_$AnalysisDateStr.meta.json"
-
-# Also create a copy with table name + timestamp format
-$TimestampStr = Get-Date -Format "yyyyMMdd_HHmmss"
-$HtmlFileAlt = "$TempDir\$($ShortName)_$TimestampStr.html"
+$paths = Get-LogArtifactPaths -TempDir $TempDir -TableName $TableName -AnalysisDateStr $AnalysisDateStr -Now $Now
+$CsvFile = $paths.CsvFile
+$HtmlFile = $paths.HtmlFile
+$CacheCsv = $paths.CacheCsv
+$CacheMeta = $paths.CacheMeta
 
 if (-not (Test-Path $TempDir)) {
     New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
@@ -284,7 +235,6 @@ Write-Host "Total records: $totalEvents" -ForegroundColor Green
 
 if ($totalEvents -eq 0) {
     Write-Host "Warning: No data found" -ForegroundColor Yellow
-    exit 0
 }
 
 $allUsers = @()
@@ -322,17 +272,14 @@ Write-Host ""
 # Step 3: Generate HTML
 Write-Host "[3/4] Generating HTML report..." -ForegroundColor Yellow
 
-& "$ScriptDir\analyze.ps1" -CsvPath $CsvFile -OutputPath $HtmlFile -AnalysisDate (Get-Date -Format "yyyy-MM-dd")
+& "$ScriptDir\analyze.ps1" -CsvPath $CsvFile -OutputPath $HtmlFile -AnalysisDate $AnalysisDateDisplay -TableName $TableName
 
 if (-not (Test-Path $HtmlFile)) {
     Write-Host "Error: HTML file not generated" -ForegroundColor Red
     exit 1
 }
 
-# Copy to alternate filename format (TableName_Timestamp.html)
-Copy-Item -Path $HtmlFile -Destination $HtmlFileAlt -Force
 Write-Host "HTML report generated: $HtmlFile" -ForegroundColor Green
-Write-Host "HTML report (alternate): $HtmlFileAlt" -ForegroundColor Green
 Write-Host ""
 
 # Step 4: Open in browser

@@ -17,6 +17,15 @@ param(
     [string]$Query = "AuditGeneralDCR_CL",
 
     [Parameter(Mandatory = $false)]
+    [string]$TableName = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$StartTime = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$EndTime = "",
+
+    [Parameter(Mandatory = $false)]
     [int]$Hours = 1,
 
     [Parameter(Mandatory = $false)]
@@ -43,6 +52,8 @@ param(
 # ============================================================
 $AzureEnvironment = "AzureChinaCloud"
 $ModuleName = "Az.OperationalInsights"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+. (Join-Path $ScriptDir 'log-analyzer-core.ps1')
 
 # ============================================================
 # Functions
@@ -143,16 +154,25 @@ function Invoke-LogQuery {
 
         [int]$Hours = 1,
 
+        [datetime]$QueryStartTime,
+
+        [datetime]$QueryEndTime,
+
         [switch]$IncludeStats
     )
 
     Write-Host "`n=== Executing Log Query ===" -ForegroundColor Cyan
     Write-Host "Workspace: $WorkspaceId"
     Write-Host "Query: $($Query.Substring(0, [Math]::Min(80, $Query.Length)))..."
-    Write-Host "Time range: Past $Hours hours"
-
-    $startTime = (Get-Date).AddHours(-$Hours)
-    $endTime = (Get-Date)
+    if ($QueryStartTime -and $QueryEndTime) {
+        $startTime = $QueryStartTime
+        $endTime = $QueryEndTime
+        Write-Host "Time range: $($startTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($endTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+    } else {
+        $startTime = (Get-Date).AddHours(-$Hours)
+        $endTime = (Get-Date)
+        Write-Host "Time range: Past $Hours hours"
+    }
 
     try {
         $response = Invoke-AzOperationalInsightsQuery `
@@ -200,6 +220,10 @@ function Invoke-LogQuery {
     }
     else {
         Write-Host "`nQuery returned empty results" -ForegroundColor Yellow
+        if ($ExportCsv) {
+            'TimeGenerated' | Out-File -FilePath $ExportCsv -Encoding UTF8 -Force
+            Write-Host "Empty CSV created: $ExportCsv" -ForegroundColor Yellow
+        }
     }
 }
 
@@ -217,8 +241,20 @@ Initialize-Modules
 # Authenticate
 Initialize-AzAuth
 
+# Build table query when table and explicit range are provided
+$queryStartTime = $null
+$queryEndTime = $null
+if ($TableName) {
+    if (-not $StartTime -or -not $EndTime) {
+        throw '-TableName requires -StartTime and -EndTime.'
+    }
+    $queryStartTime = [DateTime]::Parse($StartTime)
+    $queryEndTime = [DateTime]::Parse($EndTime)
+    $Query = New-LogTableQuery -TableName $TableName -StartTime $queryStartTime -EndTime $queryEndTime
+}
+
 # Execute query
-Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -IncludeStats:$IncludeStats
+Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -QueryStartTime $queryStartTime -QueryEndTime $queryEndTime -IncludeStats:$IncludeStats
 
 
 <#

@@ -1,33 +1,80 @@
-# Azure Log Bulk Analyzer - 2026-05-08
-# Generates self-contained HTML report from exported CSV
+﻿param(
+    [Parameter(Mandatory = $true)]
+    [string]$CsvPath,
 
-$csvPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\General_20260508.csv"
-$outputPath = "$env:USERPROFILE\AppData\Local\Temp\opencode\report_20260508.html"
-$analysisDate = "2026-05-08"
+    [Parameter(Mandatory = $true)]
+    [string]$OutputPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$AnalysisDate,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TableName
+)
+
+# Generates self-contained HTML report from exported CSV
+$csvPath = $CsvPath
+$outputPath = $OutputPath
+$analysisDate = $AnalysisDate
+$reportTitle = "$TableName Report"
+$sourceName = Split-Path -Leaf $csvPath
 
 Write-Host "Loading CSV data..." -ForegroundColor Cyan
-$data = Import-Csv -Path $csvPath -Encoding UTF8
+$data = @(Import-Csv -Path $csvPath -Encoding UTF8)
 $totalEvents = $data.Count
 Write-Host "Loaded $totalEvents records" -ForegroundColor Green
 
 Write-Host "Computing statistics..." -ForegroundColor Cyan
 
+function Get-FieldValue {
+    param(
+        [object]$Row,
+        [string[]]$Names,
+        [string]$Default = 'Unknown'
+    )
+
+    foreach ($name in $Names) {
+        if ($Row.PSObject.Properties.Name -contains $name) {
+            $value = [string]$Row.$name
+            if ($value -and $value.Trim() -ne '') {
+                return $value
+            }
+        }
+    }
+
+    return $Default
+}
+
+function Get-UserValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('UserUPN', 'UserId', 'UserPrincipalName', 'User', 'UserName', 'Mail', 'DisplayName') }
+function Get-OperationValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('Operation', 'Activity', 'Action', 'EventName', 'OperationName') }
+function Get-WorkloadValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('Workload', 'Service', 'SourceSystem', 'RecordType') }
+function Get-ClientIpValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('ClientIP', 'ClientIp', 'IPAddress', 'SourceIP', 'SenderIP', 'IP') }
+
+function Get-SuccessValue {
+    param([object]$Row)
+
+    $value = (Get-FieldValue -Row $Row -Names @('IsSuccess', 'ResultStatus', 'Status', 'Result') -Default '').ToLowerInvariant()
+    if ($value -match '^(true|success|succeeded|delivered|0)$') { return 'true' }
+    if ($value -match '^(false|fail|failed|failure|undelivered|1)$') { return 'false' }
+    return 'unknown'
+}
+
 # Unique users
 $allUsers = @()
 foreach ($row in $data) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $u = Get-UserValue -Row $row
     $allUsers += $u
 }
 $uniqueUsers = ($allUsers | Select-Object -Unique).Count
 
 # Unique operations
-$allOps = @($data | ForEach-Object { $_.Operation })
+$allOps = @($data | ForEach-Object { Get-OperationValue -Row $_ })
 $uniqueOps = ($allOps | Select-Object -Unique).Count
 
 # Workload distribution
 $workloadMap = @{}
 foreach ($row in $data) {
-    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    $wl = Get-WorkloadValue -Row $row
     $workloadMap[$wl] = ($workloadMap[$wl] + 1)
 }
 
@@ -49,7 +96,7 @@ $topOps = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object
 # Top ClientIPs
 $ipMap = @{}
 foreach ($row in $data) {
-    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { 'Unknown' }
+    $ip = Get-ClientIpValue -Row $row
     $ipMap[$ip] = ($ipMap[$ip] + 1)
 }
 $topIPs = $ipMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10
@@ -59,7 +106,7 @@ $successCount = 0
 $failCount = 0
 $unknownCount = 0
 foreach ($row in $data) {
-    $s = $row.IsSuccess
+    $s = Get-SuccessValue -Row $row
     if ($s -eq 'true') { $successCount++ }
     elseif ($s -eq 'false') { $failCount++ }
     else { $unknownCount++ }
@@ -95,40 +142,40 @@ foreach ($row in $data) {
 }
 
 # Failed operations details
-$failedEvents = @($data | Where-Object { $_.IsSuccess -eq 'false' })
+$failedEvents = @($data | Where-Object { (Get-SuccessValue -Row $_) -eq 'false' })
 $failedByOp = @{}
 foreach ($row in $failedEvents) {
-    $op = if ($row.Operation) { $row.Operation } else { 'Unknown' }
+    $op = Get-OperationValue -Row $row
     $failedByOp[$op] = ($failedByOp[$op] + 1)
 }
 $failedByOp = $failedByOp.GetEnumerator() | Sort-Object Value -Descending
 
 # High-privilege operations
 $highPrivOps = @('ExportReport', 'Search', 'EditDataset', 'Delete', 'DeleteDataset', 'DeleteReport', 'DeleteWorkspace', 'AdminAction')
-$highPrivEvents = @($data | Where-Object { $highPrivOps -contains $_.Operation })
+$highPrivEvents = @($data | Where-Object { $highPrivOps -contains (Get-OperationValue -Row $_) })
 $highPrivByUser = @{}
 foreach ($row in $highPrivEvents) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
-    $key = "$u | $($row.Operation)"
+    $u = Get-UserValue -Row $row
+    $key = "$u | $(Get-OperationValue -Row $row)"
     $highPrivByUser[$key] = ($highPrivByUser[$key] + 1)
 }
 $highPrivByUser = $highPrivByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 20
 
 # Sensitive data events
 $sensitiveOps = @('SensitivityLabeledFileOpened', 'SensitivityLabeledFileRenamed', 'IrmContent', 'AppliedSensitivityLabel', 'ChangedSensitivityLabel')
-$sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains $_.Operation })
+$sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains (Get-OperationValue -Row $_) })
 $sensitiveByOp = @{}
 foreach ($row in $sensitiveEvents) {
-    $op = $_.Operation
+    $op = Get-OperationValue -Row $row
     $sensitiveByOp[$op] = ($sensitiveByOp[$op] + 1)
 }
 $sensitiveByOp = $sensitiveByOp.GetEnumerator() | Sort-Object Value -Descending
 
 # Service account activity (GUIDs starting with 0000-...)
-$serviceAcctEvents = @($data | Where-Object { $_.UserId -match '^00000009-' })
+$serviceAcctEvents = @($data | Where-Object { (Get-UserValue -Row $_) -match '^00000009-' })
 $serviceAcctByOp = @{}
 foreach ($row in $serviceAcctEvents) {
-    $op = if ($row.Operation) { $row.Operation } else { 'Unknown' }
+    $op = Get-OperationValue -Row $row
     $serviceAcctByOp[$op] = ($serviceAcctByOp[$op] + 1)
 }
 $serviceAcctByOp = $serviceAcctByOp.GetEnumerator() | Sort-Object Value -Descending
@@ -136,8 +183,9 @@ $serviceAcctByOp = $serviceAcctByOp.GetEnumerator() | Sort-Object Value -Descend
 # IP velocity - single IP with multiple users
 $ipUsers = @{}
 foreach ($row in $data) {
-    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { continue }
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $ip = Get-ClientIpValue -Row $row
+    if ($ip -eq 'Unknown') { continue }
+    $u = Get-UserValue -Row $row
     if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
     $ipUsers[$ip][$u] = 1
 }
@@ -157,10 +205,11 @@ $ipVelocity = $ipVelocity | Sort-Object UserCount -Descending
 # Suspicious IPs (non-RFC1918 accessing multiple workloads)
 $ipWorkloads = @{}
 foreach ($row in $data) {
-    $ip = if ($row.ClientIP -and $row.ClientIP -ne '') { $row.ClientIP } else { continue }
+    $ip = Get-ClientIpValue -Row $row
+    if ($ip -eq 'Unknown') { continue }
     # Skip RFC1918
     if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' -or $ip -eq 'Unknown' -or $ip -eq '0.0.0.0') { continue }
-    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    $wl = Get-WorkloadValue -Row $row
     if (-not $ipWorkloads.ContainsKey($ip)) { $ipWorkloads[$ip] = @{} }
     $ipWorkloads[$ip][$wl] = 1
 }
@@ -180,7 +229,7 @@ $suspiciousIPs = $suspiciousIPs | Sort-Object WorkloadCount -Descending
 # Off-hours by user
 $offHoursByUser = @{}
 foreach ($row in $offHoursEvents) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $u = Get-UserValue -Row $row
     $offHoursByUser[$u] = ($offHoursByUser[$u] + 1)
 }
 $offHoursByUser = $offHoursByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15
@@ -251,50 +300,26 @@ $chartColors = @('#58a6ff', '#3fb950', '#bc8cff', '#f0883e', '#f85149', '#39d2c0
 
 function ToJsonArray {
     param([hashtable]$map)
-    $items = $map.GetEnumerator() | Sort-Object Value -Descending
-    $json = "["
-    $first = $true
-    foreach ($item in $items) {
-        if (-not $first) { $json += ',' }
-        $name = (EscapeHtml $item.Name) -replace '"', '\\"'
-        $json += "{\"name\":\"$name\",\"value\":$($item.Value)}"
-        $first = $false
-    }
-    $json += "]"
-    return $json
+    $rows = @($map.GetEnumerator() | Sort-Object Value -Descending | ForEach-Object {
+        [PSCustomObject]@{ name = $_.Name; value = $_.Value }
+    })
+    return ConvertTo-Json -InputObject $rows -Compress -Depth 4
 }
 
 function ToSortedJsonArray {
     param([array]$items, [string]$nameKey = 'Name', [string]$valueKey = 'Value')
-    $json = "["
-    $first = $true
-    foreach ($item in $items) {
-        if (-not $first) { $json += ',' }
-        $name = (EscapeHtml $item.$nameKey) -replace '"', '\\"'
-        $json += "{\"name\":\"$name\",\"value\":$($item.$valueKey)}"
-        $first = $false
-    }
-    $json += "]"
-    return $json
+    $rows = @($items | ForEach-Object {
+        [PSCustomObject]@{ name = $_.$nameKey; value = $_.$valueKey }
+    })
+    return ConvertTo-Json -InputObject $rows -Compress -Depth 4
 }
 
 function ToKeyValueJsonArray {
     param([array]$items, [string]$keyName = 'Name', [string]$valName = 'Value')
-    $json = "["
-    $first = $true
-    foreach ($item in $items) {
-        if (-not $first) { $json += ',' }
-        $k = (EscapeHtml $item.$keyName) -replace '"', '\\"'
-        $v = $item.$valName
-        if ($v -is [int] -or $v -is [double]) {
-            $json += "{\"key\":\"$k\",\"value\":$v}"
-        } else {
-            $json += "{\"key\":\"$k\",\"value\":\"$((EscapeHtml $v) -replace '"', '\\"')\"}"
-        }
-        $first = $false
-    }
-    $json += "]"
-    return $json
+    $rows = @($items | ForEach-Object {
+        [PSCustomObject]@{ key = $_.$keyName; value = $_.$valName }
+    })
+    return ConvertTo-Json -InputObject $rows -Compress -Depth 4
 }
 
 $topUsersJson = ToSortedJsonArray $topUsers
@@ -321,28 +346,27 @@ $suspiciousIPsJson = ToKeyValueJsonArray -items $suspiciousIPs -keyName 'IP' -va
 $ipVelocityJson = ToKeyValueJsonArray -items $ipVelocity -keyName 'IP' -valName 'UserCount'
 
 # Glossary JSON
-$glossaryJson = "{"
-$gfirst = $true
+$glossaryJsonObject = @{}
 foreach ($op in $glossaryOps.Keys | Sort-Object) {
-    if (-not $gfirst) { $glossaryJson += ',' }
-    $opName = (EscapeHtml $op) -replace '"', '\\"'
-    $glossaryJson += "\"$opName\":{\"zh\":\"$($glossaryOps[$op].zh -replace '"', '\\"')\",\"ja\":\"$($glossaryOps[$op].ja -replace '"', '\\"')\",\"count\":$($glossaryOps[$op].count)}"
-    $gfirst = $false
-}
-$glossaryJson += "}"
-
-# Workload glossary JSON
-$wlGlossaryJson = "{"
-$wfirst = $true
-foreach ($wl in $wlGlossary.Keys | Sort-Object) {
-    if ($workloadMap.ContainsKey($wl)) {
-        if (-not $wfirst) { $wlGlossaryJson += ',' }
-        $wlName = (EscapeHtml $wl) -replace '"', '\\"'
-        $wlGlossaryJson += "\"$wlName\":{\"zh\":\"$($wlGlossary[$wl].zh -replace '"', '\\"')\",\"ja\":\"$($wlGlossary[$wl].ja -replace '"', '\\"')\"}"
-        $wfirst = $false
+    $glossaryJsonObject[$op] = [PSCustomObject]@{
+        zh = $glossaryOps[$op].zh
+        ja = $glossaryOps[$op].ja
+        count = $glossaryOps[$op].count
     }
 }
-$wlGlossaryJson += "}"
+$glossaryJson = ConvertTo-Json -InputObject $glossaryJsonObject -Compress -Depth 5
+
+# Workload glossary JSON
+$wlGlossaryJsonObject = @{}
+foreach ($wl in $wlGlossary.Keys | Sort-Object) {
+    if ($workloadMap.ContainsKey($wl)) {
+        $wlGlossaryJsonObject[$wl] = [PSCustomObject]@{
+            zh = $wlGlossary[$wl].zh
+            ja = $wlGlossary[$wl].ja
+        }
+    }
+}
+$wlGlossaryJson = ConvertTo-Json -InputObject $wlGlossaryJsonObject -Compress -Depth 5
 
 # Build data table - first 500 rows
 $tableRows = ''
@@ -350,11 +374,11 @@ $previewRows = [Math]::Min(500, $data.Count)
 for ($i = 0; $i -lt $previewRows; $i++) {
     $row = $data[$i]
     $tg = if ($row.TimeGenerated) { $row.TimeGenerated } else { '' }
-    $user = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { '' }
-    $op = if ($row.Operation) { $row.Operation } else { '' }
-    $wl = if ($row.Workload) { $row.Workload } else { '' }
-    $ip = if ($row.ClientIP) { $row.ClientIP } else { '' }
-    $success = if ($row.IsSuccess) { $row.IsSuccess } else { '' }
+    $user = Get-UserValue -Row $row
+    $op = Get-OperationValue -Row $row
+    $wl = Get-WorkloadValue -Row $row
+    $ip = Get-ClientIpValue -Row $row
+    $success = Get-SuccessValue -Row $row
     $tableRows += "<tr><td>$i</td><td>$(EscapeHtml $tg)</td><td class='op-cell' data-op='$(EscapeHtml $op)'>$(EscapeHtml $op)</td><td>$(EscapeHtml $user)</td><td>$(EscapeHtml $wl)</td><td>$(EscapeHtml $ip)</td><td class='status-$(EscapeHtml $success)'>$(EscapeHtml $success)</td></tr>`n"
 }
 
@@ -369,6 +393,7 @@ if ($ipVelocity.Count -gt 0) { $riskCount++ }
 
 # Determine if we should show risk section
 $showRiskSection = ($riskCount -gt 0).ToString().ToLower()
+$riskSectionDisplay = if ($riskCount -gt 0) { 'block' } else { 'none' }
 
 $html = @"
 <!DOCTYPE html>
@@ -376,14 +401,14 @@ $html = @"
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Azure Audit Report - $analysisDate</title>
+<title>$reportTitle - $analysisDate</title>
 <style>
 :root {
-  --bg-primary: #0d1117; --bg-secondary: #161b22; --bg-tertiary: #21262d;
-  --border: #30363d; --text-primary: #e6edf3; --text-secondary: #8b949e;
-  --accent: #58a6ff; --accent-green: #3fb950; --accent-red: #f85149;
-  --accent-yellow: #d29922; --accent-purple: #bc8cff; --accent-orange: #f0883e;
-  --accent-cyan: #39d2c0;
+  --bg-primary: #ffffff; --bg-secondary: #ffffff; --bg-tertiary: #f6f8fa;
+  --border: #d0d7de; --text-primary: #111111; --text-secondary: #4b5563;
+  --accent: #0969da; --accent-green: #116329; --accent-red: #cf222e;
+  --accent-yellow: #9a6700; --accent-purple: #8250df; --accent-orange: #bc4c00;
+  --accent-cyan: #0550ae;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', 'Noto Sans JP', Helvetica, Arial, sans-serif; background: var(--bg-primary); color: var(--text-primary); padding: 24px; line-height: 1.6; }
@@ -413,7 +438,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC
 .bar-item { display: flex; align-items: center; margin-bottom: 4px; font-size: 13px; }
 .bar-label { width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; padding-right: 12px; color: var(--text-secondary); cursor: help; }
 .bar-container { flex: 1; background: var(--bg-tertiary); border-radius: 4px; height: 22px; position: relative; min-width: 60px; }
-.bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: rgba(255,255,255,0.9); min-width: 30px; transition: width 0.3s ease; }
+.bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding-left: 8px; font-size: 11px; color: #ffffff; min-width: 30px; transition: width 0.3s ease; }
 .bar-count { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--text-secondary); }
 .timeline-bar { display: flex; align-items: center; margin-bottom: 3px; font-size: 12px; }
 .timeline-label { width: 130px; color: var(--text-secondary); flex-shrink: 0; }
@@ -425,7 +450,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC
 .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .legend-color { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
 .seg-bar { height: 24px; border-radius: 6px; overflow: hidden; display: flex; margin-bottom: 12px; }
-.seg-fill { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; color: rgba(255,255,255,0.9); }
+.seg-fill { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #ffffff; }
 .seg-legend { display: flex; gap: 16px; flex-wrap: wrap; }
 .seg-legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-secondary); }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -447,7 +472,7 @@ tr:hover td { background: var(--bg-tertiary); }
 .risk-low { background: rgba(210,153,34,0.15); color: var(--accent-yellow); }
 .risk-subsection { margin-bottom: 24px; }
 .risk-subsection h3 { font-size: 15px; margin-bottom: 12px; color: var(--accent-red); }
-.tooltip-box { position: fixed; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; z-index: 1000; pointer-events: none; max-width: 350px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); display: none; }
+.tooltip-box { position: fixed; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; font-size: 12px; z-index: 1000; pointer-events: none; max-width: 350px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); display: none; }
 .tooltip-box .tip-cn { color: var(--accent); margin-bottom: 4px; }
 .tooltip-box .tip-jp { color: var(--accent-purple); }
 .tooltip-box .tip-op { color: var(--text-secondary); font-size: 11px; margin-bottom: 6px; }
@@ -468,7 +493,7 @@ tr:hover td { background: var(--bg-tertiary); }
 </div>
 
 <div class="navbar">
-  <h2>Azure Audit Report</h2>
+  <h2>$TableName</h2>
   <div class="lang-toggle">
     <button class="active" onclick="switchLang('zh')">中文</button>
     <button onclick="switchLang('ja')">日本語</button>
@@ -476,12 +501,12 @@ tr:hover td { background: var(--bg-tertiary); }
 </div>
 
 <div class="header">
-  <h1>Audit General Report</h1>
-  <div class="subtitle" data-i18n="subtitle">Office365 审计日志分析报告</div>
+  <h1>$reportTitle</h1>
+  <div class="subtitle" data-i18n="subtitle">Log Analytics 日志分析报告</div>
   <div class="meta-tags">
     <span class="meta-tag">查询时间段: $analysisDate</span>
     <span class="meta-tag">Total Records: $totalEvents</span>
-    <span class="meta-tag">Source: General_20260508.csv</span>
+    <span class="meta-tag">Source: $sourceName</span>
   </div>
 </div>
 
@@ -557,7 +582,7 @@ tr:hover td { background: var(--bg-tertiary); }
   <div id="success-ratio"></div>
 </div>
 
-<div class="section" id="risk-section" style="display: $([if($showRiskSection -eq 'true'){'block'}else{'none'}]);">
+<div class="section" id="risk-section" style="display: $riskSectionDisplay;">
   <h2 data-i18n="riskAnalysis">风险分析</h2>
   <p style="color:var(--accent-red);margin-bottom:16px;font-size:14px;" data-i18n="riskIndicators">$riskCount 个风险指标已检出</p>
   <div id="risk-content"></div>
@@ -604,7 +629,7 @@ const i18n = {
     "successRatio":"成功/失败比率","riskAnalysis":"风险分析","detailedTable":"详细数据",
     "showGlossary":"显示术语表","hideGlossary":"隐藏术语表","metric":"指标","value":"值",
     "severity":"严重程度","unknown":"未知","previous":"上一页","next":"下一页",
-    "subtitle":"Office365 审计日志分析报告","tablePreview":"预览前 500 行",
+    "subtitle":"Log Analytics 日志分析报告","tablePreview":"预览前 500 行",
     "time":"时间","operation":"操作","user":"用户","workload":"工作负载","clientIP":"IP",
     "status":"状态","riskIndicators":"$riskCount 个风险指标已检出",
     "failedOps":"失败操作","suspiciousIPs":"可疑 IP","offHours":"非工作时间活动",
@@ -617,9 +642,9 @@ const i18n = {
     "success":"成功","failed":"失敗","activityTimeline":"アクティビティタイムライン","workloadDist":"ワークロード分布",
     "topUsers":"アクティブユーザーランキング","topOps":"操作タイプランキング","topIPs":"クライアント IP ランキング",
     "successRatio":"成功/失敗比率","riskAnalysis":"リスク分析","detailedTable":"詳細データ",
-    "showGlossary":用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
-    "severity":"重要度","unknown":"不明","previous":"前へ""next":"次へ",
-    "subtitle":"Office365 監査ログ分析レポート","tablePreview":"最初の 500 行をプレビュー",
+    "showGlossary":"用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
+    "severity":"重要度","unknown":"不明","previous":"前へ","next":"次へ",
+    "subtitle":"Log Analytics ログ分析レポート","tablePreview":"最初の 500 行をプレビュー",
     "time":"時間","operation":"操作","user":"ユーザー","workload":"ワークロード","clientIP":"IP",
     "status":"ステータス","riskIndicators":"$riskCount 件のリスク指標が検出されました",
     "failedOps":"失敗した操作","suspiciousIPs":"不審な IP","offHours":"時間外のアクティビティ",
