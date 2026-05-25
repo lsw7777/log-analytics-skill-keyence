@@ -1,25 +1,11 @@
 ---
 name: bulk-log-analyzer
-description: Analyze bulk Azure Log Analytics logs and generate comprehensive HTML reports. Supports multiple DCR_CL tables. Data is exported to a temporary CSV file first to handle large datasets efficiently, then analyzed locally. Use when analyzing Office365 audit logs, viewing log statistics, generating log reports, or exploring activity patterns across time periods, users, or operations. Triggers for bulk log analysis, activity summaries, statistics generation, compliance reports, or any request to view multiple logs together.
+description: Analyze bulk Azure Log Analytics audit logs and generate comprehensive HTML reports. Data is exported to a temporary JSON file first to handle large datasets efficiently, then analyzed locally. Use when analyzing Office365 audit logs, viewing log statistics, generating log reports, or exploring activity patterns across time periods, users, or operations. Triggers for bulk log analysis, activity summaries, statistics generation, compliance reports, or any request to view multiple logs together.
 ---
 
 # Bulk Log Analyzer
 
-Analyze Azure Log Analytics logs at scale and generate interactive, self-contained HTML reports.
-
-## Supported Tables
-
-| Table Name | Short Name | Description |
-|-----------|-----------|-------------|
-| `AuditGeneralDCR_CL` | `General` | Office 365 通用审计日志 |
-| `SharePointAuditDCR_CL` | `SPAudit` | SharePoint 审计日志 |
-| `MessageTraceDataDCR_CL` | `MsgTrace` | 邮件追踪数据 |
-| `AssignedLicensesDCR_CL` | `Licenses` | 已分配许可证信息 |
-| `AzureADUsersDCR_CL` | `AADUsers` | Azure AD 用户信息 |
-| `MailboxStatisticsDCR_CL` | `Mailbox` | 邮箱统计信息 |
-| `WQCLogDCR_CL` | `WQC` | WQC 日志 |
-
-**Usage:** Add `-TableName <name>` parameter to `azure_log_query.ps1`, or use `-Query` for full KQL control.
+Analyze Office365 Audit General logs at scale and generate interactive, self-contained HTML reports.
 
 ## Prerequisites
 
@@ -35,45 +21,33 @@ Analyze Azure Log Analytics logs at scale and generate interactive, self-contain
 **Always** probe the current schema before writing analysis code, as fields evolve over time.
 
 ```bash
-# Probe AuditGeneralDCR_CL
-powershell -File ".\azure_log_query.ps1" -TableName "AuditGeneralDCR_CL" -Query "AuditGeneralDCR_CL | take 1" -Hours 48
-
-# Probe SharePointAuditDCR_CL
-powershell -File ".\azure_log_query.ps1" -TableName "SharePointAuditDCR_CL" -Query "SharePointAuditDCR_CL | take 1" -Hours 48
-
-# Probe MessageTraceDataDCR_CL
-powershell -File ".\azure_log_query.ps1" -TableName "MessageTraceDataDCR_CL" -Query "MessageTraceDataDCR_CL | take 1" -Hours 48
+powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | take 1" -Hours 48
 ```
 
-This returns a single record with all available columns. Note the field structure — fields vary by table type.
+This returns a single record with all available columns. Note the field structure — these are Office365 Management Activity API objects ingested via custom DCR.
 
 ### Step 2: Export Data to Staging File
 
 **Data may be large**, so always export to a temporary staging file first, then analyze the file rather than re-querying Azure.
 
 **Naming Convention:**
-- Format: `{ShortName}_YYYYMMDD.csv`
+- Format: `General_YYYYMMDD.csv`
 - Always include `YYYYMMDD` (the date the user asked to analyze, not the export date)
 - The file is placed in `$env:USERPROFILE\AppData\Local\Temp\opencode\`
 - Examples:
-  - `General_20260507.csv` — 用户要求分析 2026-05-07 的 AuditGeneral 数据
-  - `SPAudit_20260507.csv` — 用户要求分析 2026-05-07 的 SharePointAudit 数据
-  - `MsgTrace_20260507.csv` — 用户要求分析 2026-05-07 的 MessageTrace 数据
+  - `General_20260507.csv` — 用户要求分析 2026-05-07 的数据
   - `General_202605_last7d.csv` — 最后 7 天
 
 **Always use `-ExportCsv` in `azure_log_query.ps1`:**
 ```bash
-# AuditGeneralDCR_CL - Yesterday's data
-powershell -File ".\azure_log_query.ps1" -TableName "AuditGeneralDCR_CL" -Query "AuditGeneralDCR_CL | where TimeGenerated >= datetime(2026-05-07T00:00:00Z) and TimeGenerated < datetime(2026-05-08T00:00:00Z) | sort by TimeGenerated desc" -Hours 48 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\General_20260507.csv"
+# Yesterday's data (use -Hours 24-48 depending on query)
+powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | where TimeGenerated >= datetime(2026-05-07T00:00:00Z) and TimeGenerated < datetime(2026-05-08T00:00:00Z) | sort by TimeGenerated desc" -Hours 48 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\logs_20260507.csv"
 
-# SharePointAuditDCR_CL - Last 24 hours
-powershell -File ".\azure_log_query.ps1" -TableName "SharePointAuditDCR_CL" -Query "SharePointAuditDCR_CL | sort by TimeGenerated desc" -Hours 24 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\SPAudit_20260508.csv"
+# Last 24 hours
+powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | sort by TimeGenerated desc" -Hours 24 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\logs_20260508.csv"
 
-# MessageTraceDataDCR_CL - Custom KQL filter
-powershell -File ".\azure_log_query.ps1" -TableName "MessageTraceDataDCR_CL" -Query "MessageTraceDataDCR_CL | where Status == 'Failed' | sort by TimeGenerated desc" -Hours 168 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\MsgTrace_202605_failed.csv"
-
-# Using -TableName shorthand (auto-builds query)
-powershell -File ".\azure_log_query.ps1" -TableName "AuditGeneralDCR_CL" -Hours 24 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\General_20260508.csv"
+# Custom KQL filter
+powershell -File "$env:USERPROFILE\.config\opencode\skills\AnalyticsLog\bulk-log-analyzer\azure_log_query.ps1" -Query "AuditGeneralDCR_CL | where Workload == 'PowerBI' | sort by TimeGenerated desc" -Hours 168 -ExportCsv "$env:USERPROFILE\AppData\Local\Temp\opencode\logs_202605_powerbi.csv"
 ```
 
 **KQL tips:**
@@ -147,16 +121,6 @@ Create a **self-contained** HTML report using the **standard template** below. T
   <!-- Meta tags: 查询时间范围 (from user-specified time, NOT data TimeGenerated) -->
   <!-- Example: "查询时间段：2026-05-07" or "Query Period: 2026-05-07" -->
   <!-- Total Records, Source file info -->
-  <!-- Link to Azure Log Analytics portal for direct log viewing -->
-</div>
-<div class="section" id="table-info-section">
-  <!-- Table Info: displays table name, description in CN/JP -->
-</div>
-<div class="section" id="field-dict-section">
-  <!-- Field Dictionary: table of all fields with CN/JP/EN descriptions -->
-</div>
-<div class="section" id="ai-analysis-section">
-  <!-- AI Analysis: auto-generated insights from log data -->
 </div>
 <div class="section" id="glossary-section">
   <!-- Operation Glossary: table mapping raw operation values to Chinese/Japanese explanations -->

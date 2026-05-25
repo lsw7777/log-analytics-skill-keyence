@@ -14,10 +14,7 @@
 
 param(
     [Parameter(Mandatory = $false)]
-    [string]$Query = "",
-
-    [Parameter(Mandatory = $false)]
-    [string]$TableName = "AuditGeneralDCR_CL",
+    [string]$Query = "AuditGeneralDCR_CL",
 
     [Parameter(Mandatory = $false)]
     [int]$Hours = 1,
@@ -216,48 +213,12 @@ function Invoke-LogQuery {
 }
 
 # ============================================================
-# Supported Tables
-# ============================================================
-$SupportedTables = @(
-    "AuditGeneralDCR_CL",
-    "AssignedLicensesDCR_CL",
-    "AzureADUsersDCR_CL",
-    "MailboxStatisticsDCR_CL",
-    "MessageTraceDataDCR_CL",
-    "SharePointAuditDCR_CL",
-    "WQCLogDCR_CL"
-)
-
-# ============================================================
-# Helper: Build default query from TableName
-# ============================================================
-function Build-DefaultQuery {
-    param([string]$TableName)
-    return $TableName
-}
-
-# ============================================================
 # Main
 # ============================================================
 Write-Host "============================================" -ForegroundColor Magenta
 Write-Host "  Azure Monitor Log Query - China Cloud" -ForegroundColor Magenta
 Write-Host "  Using Az.OperationalInsights Official Library" -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta
-
-# If no explicit Query provided, build from TableName
-if ([string]::IsNullOrWhiteSpace($Query)) {
-    # Validate TableName
-    if ($SupportedTables -notcontains $TableName) {
-        Write-Host "Error: Unsupported table '$TableName'" -ForegroundColor Red
-        Write-Host "Supported tables:" -ForegroundColor Yellow
-        foreach ($t in $SupportedTables) {
-            Write-Host "  - $t" -ForegroundColor Yellow
-        }
-        exit 1
-    }
-    $Query = Build-DefaultQuery -TableName $TableName
-    Write-Host "Using table: $TableName" -ForegroundColor Cyan
-}
 
 # Initialize modules
 Initialize-Modules

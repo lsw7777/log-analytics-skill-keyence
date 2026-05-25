@@ -22,7 +22,23 @@ param(
     [int]$CacheTTL = 24,
 
     [Parameter(Mandatory = $false)]
-    [string]$AnalysisDate = ""
+    [string]$AnalysisDate = "",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$UseYesterday = $true,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("yesterday", "today", "last7days", "last30days", "custom")]
+    [string]$DateRange = "yesterday",
+
+    [Parameter(Mandatory = $false)]
+    [int]$DateOffset = -1,
+
+    [Parameter(Mandatory = $false)]
+    [string]$CustomStart = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$CustomEnd = ""
 )
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -37,17 +53,95 @@ $ShortName = if ($TableName -match '^(.+)DCR_CL$') {
     $TableName -replace '_CL$', ''
 }
 
-# Determine analysis date
-if ($AnalysisDate) {
-    $AnalysisDateStr = $AnalysisDate -replace '-', ''
-} else {
-    $AnalysisDateStr = Get-Date -Format "yyyyMMdd"
+# Determine analysis date and time range
+$now = Get-Date
+
+# Priority: CustomStart/CustomEnd > DateOffset > DateRange > UseYesterday > Hours
+if ($CustomStart -and $CustomEnd) {
+    # Custom time range
+    $StartTime = [DateTime]::Parse($CustomStart)
+    $EndTime = [DateTime]::Parse($CustomEnd)
+    $AnalysisDateStr = $StartTime.ToString("yyyyMMdd")
+    Write-Host "Time range: Custom ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+}
+elseif ($DateOffset -ne 0) {
+    # DateOffset: 0=today, -1=yesterday, -2=day before yesterday, etc.
+    $TargetDate = $now.Date.AddDays($DateOffset)
+    $TargetEnd = $TargetDate.AddDays(1).AddSeconds(-1)
+    $AnalysisDateStr = $TargetDate.ToString("yyyyMMdd")
+    $StartTime = $TargetDate
+    $EndTime = $TargetEnd
+    if ($DateOffset -eq -1) {
+        Write-Host "Time range: Yesterday ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+    }
+    elseif ($DateOffset -eq 0) {
+        Write-Host "Time range: Today ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+    }
+    else {
+        Write-Host "Time range: $([Math]::Abs($DateOffset)) day(s) ago ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+    }
+}
+elseif ($DateRange -ne "custom") {
+    # Preset date ranges
+    switch ($DateRange) {
+        "yesterday" {
+            $StartDate = $now.Date.AddDays(-1)
+            $EndDate = $StartDate.AddDays(1).AddSeconds(-1)
+            Write-Host "Time range: Yesterday" -ForegroundColor Cyan
+        }
+        "today" {
+            $StartDate = $now.Date
+            $EndDate = $now
+            Write-Host "Time range: Today (so far)" -ForegroundColor Cyan
+        }
+        "last7days" {
+            $StartDate = $now.Date.AddDays(-7)
+            $EndDate = $now
+            Write-Host "Time range: Last 7 days" -ForegroundColor Cyan
+        }
+        "last30days" {
+            $StartDate = $now.Date.AddDays(-30)
+            $EndDate = $now
+            Write-Host "Time range: Last 30 days" -ForegroundColor Cyan
+        }
+    }
+    $AnalysisDateStr = $StartDate.ToString("yyyyMMdd")
+    $StartTime = $StartDate
+    $EndTime = $EndDate
+    Write-Host "  $($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor Cyan
+}
+elseif ($UseYesterday) {
+    # Yesterday 00:00:00 to 23:59:59 (adaptive, not hardcoded)
+    $yesterday = $now.Date.AddDays(-1)
+    $yesterdayEnd = $yesterday.AddDays(1).AddSeconds(-1)
+    $AnalysisDateStr = $yesterday.ToString("yyyyMMdd")
+    $StartTime = $yesterday
+    $EndTime = $yesterdayEnd
+    Write-Host "Time range: Yesterday ($($yesterday.ToString('yyyy-MM-dd HH:mm:ss')) to $($yesterdayEnd.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
+}
+else {
+    # Last N hours from now
+    if ($AnalysisDate) {
+        $AnalysisDateStr = $AnalysisDate -replace '-', ''
+    } else {
+        $AnalysisDateStr = $now.ToString("yyyyMMdd")
+    }
+    $StartTime = $now.AddHours(-$Hours)
+    $EndTime = $now
+    Write-Host "Time range: Last $Hours hours ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
 }
 
+Write-Host "  StartTime ISO: $($StartTime.ToString('o'))" -ForegroundColor Cyan
+Write-Host "  EndTime ISO: $($EndTime.ToString('o'))" -ForegroundColor Cyan
+
 $CsvFile = "$TempDir\$($ShortName)_$AnalysisDateStr.csv"
-$HtmlFile = "$TempDir\report_$($ShortName)_$AnalysisDateStr.html"
+$HtmlFile = "$TempDir\$($ShortName)_$AnalysisDateStr.html"
 $CacheCsv = "$CacheDir\$($ShortName)_$AnalysisDateStr.csv"
 $CacheMeta = "$CacheDir\$($ShortName)_$AnalysisDateStr.meta.json"
+
+# Also create a copy with table name + timestamp format
+$TimestampStr = Get-Date -Format "yyyyMMdd_HHmmss"
+$HtmlFileAlt = "$TempDir\$($ShortName)_$TimestampStr.html"
 
 if (-not (Test-Path $TempDir)) {
     New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
@@ -157,6 +251,8 @@ if ($cacheResult -and $cacheResult.Hit) {
         TableName = $TableName
         Hours     = $Hours
         ExportCsv = $CsvFile
+        StartTime = $StartTime.ToString("o")
+        EndTime   = $EndTime.ToString("o")
     }
 
     if ($ForceLogin) {
@@ -233,7 +329,10 @@ if (-not (Test-Path $HtmlFile)) {
     exit 1
 }
 
+# Copy to alternate filename format (TableName_Timestamp.html)
+Copy-Item -Path $HtmlFile -Destination $HtmlFileAlt -Force
 Write-Host "HTML report generated: $HtmlFile" -ForegroundColor Green
+Write-Host "HTML report (alternate): $HtmlFileAlt" -ForegroundColor Green
 Write-Host ""
 
 # Step 4: Open in browser
