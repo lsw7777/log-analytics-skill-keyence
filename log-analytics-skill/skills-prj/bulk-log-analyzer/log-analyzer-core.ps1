@@ -121,6 +121,195 @@ function Select-LogTimeRangeInteractive {
     throw "Invalid time range selection: $selection"
 }
 
+function ConvertTo-RelativeLogPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BasePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$TargetPath
+    )
+
+    $baseFull = [System.IO.Path]::GetFullPath($BasePath)
+    $targetFull = [System.IO.Path]::GetFullPath($TargetPath)
+    if (-not $baseFull.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+        $baseFull += [System.IO.Path]::DirectorySeparatorChar
+    }
+
+    $baseUri = [System.Uri]::new($baseFull)
+    $targetUri = [System.Uri]::new($targetFull)
+    $relative = [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()) -replace '/', [System.IO.Path]::DirectorySeparatorChar
+
+    if (-not $relative.StartsWith('.')) {
+        $relative = ".\$relative"
+    }
+
+    return $relative
+}
+
+function Get-LogAnalyzerRepositoryRoot {
+    $coreDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    return Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $coreDir))
+}
+
+function Get-TableAnalysisProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TableName
+    )
+
+    $common = [PSCustomObject]@{
+        UserFields = @('UserUPN', 'UserId', 'UserPrincipalName', 'UPN', 'User', 'UserName', 'Mail', 'EmailAddress', 'DisplayName', 'Identity', 'Account', 'AccountName', 'SenderAddress', 'RecipientAddress')
+        OperationFields = @('Operation', 'Activity', 'Action', 'EventName', 'OperationName', 'ActivityDisplayName', 'EventType', 'ActionType', 'Command', 'Cmdlet', 'Status', 'RecordType')
+        WorkloadFields = @('Workload', 'Service', 'SourceSystem', 'RecordType', 'App', 'Application', 'ApplicationName', 'Product', 'Source', 'Category')
+        ClientIpFields = @('ClientIP', 'ClientIp', 'ClientIPAddress', 'ClientIpAddress', 'IPAddress', 'SourceIP', 'SourceIp', 'SenderIP', 'SenderIp', 'RemoteIP', 'RemoteIp', 'IP', 'Client_IP_Address')
+        SuccessFields = @('IsSuccess', 'ResultStatus', 'Status', 'Result', 'DeliveryStatus', 'EventStatus', 'ActionStatus', 'OperationStatus')
+        DefaultUser = 'System'
+        DefaultOperation = ($TableName -replace 'DCR_CL$', '')
+        DefaultWorkload = ($TableName -replace 'DCR_CL$', '')
+        DefaultClientIp = 'N/A'
+        DefaultSuccess = 'unknown'
+        GroupFields = @()
+        UseCompositeOperationGroup = $false
+    }
+
+    switch ($TableName) {
+        'AssignedLicensesDCR_CL' {
+            $common.UserFields = @('UserPrincipalName', 'UserUPN', 'UPN', 'Mail', 'EmailAddress', 'DisplayName', 'UserId', 'ObjectId', 'Id') + $common.UserFields
+            $common.OperationFields = @('SkuPartNumber', 'LicenseName', 'AssignedLicenses', 'Licenses', 'AccountEnabled', 'UserType') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'ServicePlanName', 'SkuPartNumber', 'SourceSystem') + $common.WorkloadFields
+            $common.DefaultOperation = 'Assigned License Record'
+            $common.DefaultWorkload = 'Microsoft Entra ID Licensing'
+            $common.DefaultSuccess = 'true'
+        }
+        'AuditGeneralDCR_CL' {
+            $common.UserFields = @('UserUPN', 'UserId', 'Actor', 'ActorId', 'ActorUserPrincipalName') + $common.UserFields
+            $common.OperationFields = @('Activity', 'Operation') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'RecordType') + $common.WorkloadFields
+            $common.GroupFields = @('Activity', 'Operation', 'Workload')
+            $common.UseCompositeOperationGroup = $true
+        }
+        'AzureADUsersDCR_CL' {
+            $common.UserFields = @('UserPrincipalName', 'UserUPN', 'UPN', 'Mail', 'EmailAddress', 'DisplayName', 'Id', 'ObjectId') + $common.UserFields
+            $common.OperationFields = @('AccountEnabled', 'UserType', 'JobTitle', 'Department', 'CreatedDateTime') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'SourceSystem', 'UserType', 'Department') + $common.WorkloadFields
+            $common.DefaultOperation = 'Azure AD User Record'
+            $common.DefaultWorkload = 'AzureActiveDirectory'
+            $common.DefaultSuccess = 'true'
+        }
+        'MailboxStatisticsDCR_CL' {
+            $common.UserFields = @('UserPrincipalName', 'MailboxOwnerUPN', 'PrimarySmtpAddress', 'DisplayName', 'Identity', 'Mail', 'EmailAddress') + $common.UserFields
+            $common.OperationFields = @('RecipientTypeDetails', 'MailboxType', 'IsArchiveMailbox', 'StorageLimitStatus', 'LastLogonTime') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'RecipientTypeDetails', 'MailboxType', 'SourceSystem') + $common.WorkloadFields
+            $common.DefaultOperation = 'Mailbox Statistics Record'
+            $common.DefaultWorkload = 'Exchange'
+            $common.DefaultSuccess = 'true'
+        }
+        'MessageTraceDataDCR_CL' {
+            $common.UserFields = @('SenderAddress', 'RecipientAddress', 'Sender', 'Recipient', 'FromIP', 'MessageId', 'Subject') + $common.UserFields
+            $common.OperationFields = @('Status', 'EventType', 'Directionality', 'MessageTraceEvent', 'MessageTraceType', 'Subject') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'Service', 'Directionality', 'SourceSystem') + $common.WorkloadFields
+            $common.ClientIpFields = @('FromIP', 'ToIP', 'ClientIP', 'SenderIP', 'RecipientIP') + $common.ClientIpFields
+            $common.DefaultOperation = 'Message Trace Event'
+            $common.DefaultWorkload = 'Exchange'
+        }
+        'SharePointAuditDCR_CL' {
+            $common.UserFields = @('UserUPN', 'UserId', 'UserPrincipalName', 'Actor', 'ActorId') + $common.UserFields
+            $common.OperationFields = @('Activity', 'Operation') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'SiteUrl', 'SourceSystem') + $common.WorkloadFields
+            $common.GroupFields = @('Activity', 'Operation', 'Workload')
+            $common.UseCompositeOperationGroup = $true
+        }
+        'WQCLogDCR_CL' {
+            $common.UserFields = @('UserPrincipalName', 'UserUPN', 'UserId', 'User', 'Requester', 'Submitter', 'Owner') + $common.UserFields
+            $common.OperationFields = @('Result', 'Action', 'Operation', 'Activity', 'QueryType', 'Command', 'Status') + $common.OperationFields
+            $common.WorkloadFields = @('Workload', 'Service', 'Category', 'SourceSystem') + $common.WorkloadFields
+            $common.DefaultOperation = 'WQC Log Event'
+            $common.DefaultWorkload = 'WQC'
+        }
+    }
+
+    return $common
+}
+
+function Get-FieldValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Row,
+
+        [Parameter(Mandatory = $true)]
+        [string[]]$Names,
+
+        [string]$Default = 'Unknown'
+    )
+
+    foreach ($name in $Names) {
+        if ($Row.PSObject.Properties.Name -contains $name) {
+            $value = [string]$Row.$name
+            if ($value -and $value.Trim() -ne '') {
+                return $value.Trim()
+            }
+        }
+    }
+
+    return $Default
+}
+
+function Get-UserValue {
+    param([object]$Row, [string]$TableName)
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.UserFields -Default $profile.DefaultUser
+}
+
+function Get-OperationValue {
+    param([object]$Row, [string]$TableName)
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
+}
+
+function Get-WorkloadValue {
+    param([object]$Row, [string]$TableName)
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.WorkloadFields -Default $profile.DefaultWorkload
+}
+
+function Get-ClientIpValue {
+    param([object]$Row, [string]$TableName)
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.ClientIpFields -Default $profile.DefaultClientIp
+}
+
+function Get-SuccessValue {
+    param([object]$Row, [string]$TableName)
+
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $value = (Get-FieldValue -Row $Row -Names $profile.SuccessFields -Default $profile.DefaultSuccess).ToLowerInvariant()
+    if ($value -match '^(true|success|succeeded|delivered|expanded|completed|complete|ok|pass|passed|0)$') { return 'true' }
+    if ($value -match '^(false|fail|failed|failure|undelivered|blocked|rejected|denied|error|timeout|quarantined|1)$') { return 'false' }
+    return 'unknown'
+}
+
+function Get-OperationGroupValue {
+    param([object]$Row, [string]$TableName)
+
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    if (-not $profile.UseCompositeOperationGroup) {
+        return Get-OperationValue -Row $Row -TableName $TableName
+    }
+
+    $parts = @()
+    foreach ($field in $profile.GroupFields) {
+        $value = Get-FieldValue -Row $Row -Names @($field) -Default ''
+        if ($value) { $parts += $value }
+    }
+
+    if ($parts.Count -eq 0) {
+        return Get-OperationValue -Row $Row -TableName $TableName
+    }
+
+    return ($parts -join ' | ')
+}
+
 function Get-LogArtifactPaths {
     param(
         [Parameter(Mandatory = $true)]
@@ -135,11 +324,16 @@ function Get-LogArtifactPaths {
         [datetime]$Now = (Get-Date)
     )
 
-    $timestamp = $Now.ToString('yyyyMMdd_HHmm')
+    $timestamp = $Now.ToString('HHmm')
+
+    $repoRoot = Get-LogAnalyzerRepositoryRoot
+    $htmlTarget = Join-Path $repoRoot "final_report_$($TableName)_$($AnalysisDateStr)_$timestamp.html"
+    $htmlRelative = ConvertTo-RelativeLogPath -BasePath $repoRoot -TargetPath $htmlTarget
 
     return [PSCustomObject]@{
         CsvFile = Join-Path $TempDir "$($TableName)_$AnalysisDateStr.csv"
-        HtmlFile = Join-Path $TempDir "$($TableName)_$timestamp.html"
+        HtmlFile = $htmlRelative
+        HtmlFilePath = $htmlTarget
         CacheCsv = Join-Path (Join-Path $TempDir 'cache') "$($TableName)_$AnalysisDateStr.csv"
         CacheMeta = Join-Path (Join-Path $TempDir 'cache') "$($TableName)_$AnalysisDateStr.meta.json"
     }

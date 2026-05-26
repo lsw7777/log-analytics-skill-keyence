@@ -12,6 +12,9 @@
     [string]$TableName
 )
 
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+. (Join-Path $ScriptDir 'log-analyzer-core.ps1')
+
 # Generates self-contained HTML report from exported CSV
 $csvPath = $CsvPath
 $outputPath = $OutputPath
@@ -25,6 +28,7 @@ $totalEvents = $data.Count
 Write-Host "Loaded $totalEvents records" -ForegroundColor Green
 
 Write-Host "Computing statistics..." -ForegroundColor Cyan
+$analysisProfile = Get-TableAnalysisProfile -TableName $TableName
 
 function Get-FieldValue {
     param(
@@ -45,18 +49,89 @@ function Get-FieldValue {
     return $Default
 }
 
-function Get-UserValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('UserUPN', 'UserId', 'UserPrincipalName', 'User', 'UserName', 'Mail', 'DisplayName') }
-function Get-OperationValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('Operation', 'Activity', 'Action', 'EventName', 'OperationName') }
-function Get-WorkloadValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('Workload', 'Service', 'SourceSystem', 'RecordType') }
-function Get-ClientIpValue { param([object]$Row) return Get-FieldValue -Row $Row -Names @('ClientIP', 'ClientIp', 'IPAddress', 'SourceIP', 'SenderIP', 'IP') }
+function Get-UserValue {
+    param([object]$Row)
+
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.UserFields -Default $profile.DefaultUser
+}
+
+function Get-OperationValue {
+    param([object]$Row)
+
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    if (-not $profile.UseCompositeOperationGroup) {
+        return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
+    }
+
+    $parts = @()
+    foreach ($field in $profile.GroupFields) {
+        $value = Get-FieldValue -Row $Row -Names @($field) -Default ''
+        if ($value) { $parts += $value }
+    }
+
+    if ($parts.Count -eq 0) {
+        return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
+    }
+
+    return ($parts -join ' | ')
+}
+
+function Get-WorkloadValue {
+    param([object]$Row)
+
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.WorkloadFields -Default $profile.DefaultWorkload
+}
+
+function Get-ClientIpValue {
+    param([object]$Row)
+
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    return Get-FieldValue -Row $Row -Names $profile.ClientIpFields -Default $profile.DefaultClientIp
+}
 
 function Get-SuccessValue {
     param([object]$Row)
 
-    $value = (Get-FieldValue -Row $Row -Names @('IsSuccess', 'ResultStatus', 'Status', 'Result') -Default '').ToLowerInvariant()
-    if ($value -match '^(true|success|succeeded|delivered|0)$') { return 'true' }
-    if ($value -match '^(false|fail|failed|failure|undelivered|1)$') { return 'false' }
+    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $value = (Get-FieldValue -Row $Row -Names $profile.SuccessFields -Default $profile.DefaultSuccess).ToLowerInvariant()
+    if ($value -match '^(true|success|succeeded|delivered|expanded|completed|complete|ok|pass|passed|0)$') { return 'true' }
+    if ($value -match '^(false|fail|failed|failure|undelivered|blocked|rejected|denied|error|timeout|quarantined|1)$') { return 'false' }
+    if ($profile.DefaultSuccess -eq 'true') { return 'true' }
     return 'unknown'
+}
+
+function Test-OperationContains {
+    param(
+        [object]$Row,
+        [string[]]$Operations
+    )
+
+    $operation = Get-OperationValue -Row $Row
+    foreach ($op in $Operations) {
+        if ($operation -eq $op -or $operation -like "*| $op |*" -or $operation -like "*$op*") {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-UsableIpValue {
+    param([string]$IP)
+
+    if ([string]::IsNullOrWhiteSpace($IP)) { return $false }
+    $normalized = $IP.Trim()
+    if ($normalized -in @('Unknown', 'N/A', '-', '0.0.0.0', '::', '::1', '127.0.0.1', '255.255.255.255')) { return $false }
+    return $true
+}
+
+function Get-SafeCount {
+    param([object]$Value)
+
+    if ($null -eq $Value) { return 0 }
+    return @($Value).Count
 }
 
 # Unique users
@@ -152,7 +227,7 @@ $failedByOp = $failedByOp.GetEnumerator() | Sort-Object Value -Descending
 
 # High-privilege operations
 $highPrivOps = @('ExportReport', 'Search', 'EditDataset', 'Delete', 'DeleteDataset', 'DeleteReport', 'DeleteWorkspace', 'AdminAction')
-$highPrivEvents = @($data | Where-Object { $highPrivOps -contains (Get-OperationValue -Row $_) })
+$highPrivEvents = @($data | Where-Object { Test-OperationContains -Row $_ -Operations $highPrivOps })
 $highPrivByUser = @{}
 foreach ($row in $highPrivEvents) {
     $u = Get-UserValue -Row $row
@@ -163,7 +238,7 @@ $highPrivByUser = $highPrivByUser.GetEnumerator() | Sort-Object Value -Descendin
 
 # Sensitive data events
 $sensitiveOps = @('SensitivityLabeledFileOpened', 'SensitivityLabeledFileRenamed', 'IrmContent', 'AppliedSensitivityLabel', 'ChangedSensitivityLabel')
-$sensitiveEvents = @($data | Where-Object { $sensitiveOps -contains (Get-OperationValue -Row $_) })
+$sensitiveEvents = @($data | Where-Object { Test-OperationContains -Row $_ -Operations $sensitiveOps })
 $sensitiveByOp = @{}
 foreach ($row in $sensitiveEvents) {
     $op = Get-OperationValue -Row $row
@@ -184,7 +259,7 @@ $serviceAcctByOp = $serviceAcctByOp.GetEnumerator() | Sort-Object Value -Descend
 $ipUsers = @{}
 foreach ($row in $data) {
     $ip = Get-ClientIpValue -Row $row
-    if ($ip -eq 'Unknown') { continue }
+    if (-not (Test-UsableIpValue -IP $ip)) { continue }
     $u = Get-UserValue -Row $row
     if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
     $ipUsers[$ip][$u] = 1
@@ -206,9 +281,9 @@ $ipVelocity = $ipVelocity | Sort-Object UserCount -Descending
 $ipWorkloads = @{}
 foreach ($row in $data) {
     $ip = Get-ClientIpValue -Row $row
-    if ($ip -eq 'Unknown') { continue }
+    if (-not (Test-UsableIpValue -IP $ip)) { continue }
     # Skip RFC1918
-    if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' -or $ip -eq 'Unknown' -or $ip -eq '0.0.0.0') { continue }
+    if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)') { continue }
     $wl = Get-WorkloadValue -Row $row
     if (-not $ipWorkloads.ContainsKey($ip)) { $ipWorkloads[$ip] = @{} }
     $ipWorkloads[$ip][$wl] = 1
@@ -308,7 +383,7 @@ function ToJsonArray {
 
 function ToSortedJsonArray {
     param([array]$items, [string]$nameKey = 'Name', [string]$valueKey = 'Value')
-    $rows = @($items | ForEach-Object {
+    $rows = @($items | Where-Object { $null -ne $_ -and $null -ne $_.$nameKey -and $null -ne $_.$valueKey } | ForEach-Object {
         [PSCustomObject]@{ name = $_.$nameKey; value = $_.$valueKey }
     })
     return ConvertTo-Json -InputObject $rows -Compress -Depth 4
@@ -316,7 +391,7 @@ function ToSortedJsonArray {
 
 function ToKeyValueJsonArray {
     param([array]$items, [string]$keyName = 'Name', [string]$valName = 'Value')
-    $rows = @($items | ForEach-Object {
+    $rows = @($items | Where-Object { $null -ne $_ -and $null -ne $_.$keyName -and $null -ne $_.$valName } | ForEach-Object {
         [PSCustomObject]@{ key = $_.$keyName; value = $_.$valName }
     })
     return ConvertTo-Json -InputObject $rows -Compress -Depth 4
@@ -324,6 +399,8 @@ function ToKeyValueJsonArray {
 
 $topUsersJson = ToSortedJsonArray $topUsers
 $topOpsJson = ToSortedJsonArray $topOps
+$operationGroupBreakdown = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 25
+$operationGroupBreakdownJson = ToSortedJsonArray $operationGroupBreakdown
 $topIPsJson = ToSortedJsonArray $topIPs
 $timelineJson = ToKeyValueJsonArray $timelineSorted 'Name' 'Value'
 $workloadJson = ToJsonArray $workloadMap
@@ -385,15 +462,22 @@ for ($i = 0; $i -lt $previewRows; $i++) {
 # Determine risk count
 $riskCount = 0
 if ($failCount -gt 0) { $riskCount++ }
-if ($suspiciousIPs.Count -gt 0) { $riskCount++ }
-if ($offHoursEvents.Count -gt 0) { $riskCount++ }
-if ($highPrivEvents.Count -gt 0) { $riskCount++ }
-if ($sensitiveEvents.Count -gt 0) { $riskCount++ }
-if ($ipVelocity.Count -gt 0) { $riskCount++ }
+if ((Get-SafeCount $suspiciousIPs) -gt 0) { $riskCount++ }
+if ((Get-SafeCount $offHoursEvents) -gt 0) { $riskCount++ }
+if ((Get-SafeCount $highPrivEvents) -gt 0) { $riskCount++ }
+if ((Get-SafeCount $sensitiveEvents) -gt 0) { $riskCount++ }
+if ((Get-SafeCount $ipVelocity) -gt 0) { $riskCount++ }
 
 # Determine if we should show risk section
-$showRiskSection = ($riskCount -gt 0).ToString().ToLower()
-$riskSectionDisplay = if ($riskCount -gt 0) { 'block' } else { 'none' }
+$showRiskSection = 'true'
+$riskSectionDisplay = 'block'
+$groupBreakdownDisplay = if ($analysisProfile.UseCompositeOperationGroup) { 'block' } else { 'none' }
+$highPrivCount = Get-SafeCount $highPrivEvents
+$sensitiveCount = Get-SafeCount $sensitiveEvents
+$serviceAcctCount = Get-SafeCount $serviceAcctEvents
+$offHoursCount = Get-SafeCount $offHoursEvents
+$suspiciousCount = Get-SafeCount $suspiciousIPs
+$ipVelocityCount = Get-SafeCount $ipVelocity
 
 $html = @"
 <!DOCTYPE html>
@@ -510,19 +594,10 @@ tr:hover td { background: var(--bg-tertiary); }
   </div>
 </div>
 
-<div class="glossary-section">
-  <button class="glossary-toggle" onclick="toggleGlossary()" data-i18n="showGlossary">显示术语表</button>
-  <div class="glossary-content" id="glossary-content">
-    <table class="risk-table">
-      <thead><tr>
-        <th>Operation (EN)</th>
-        <th>说明 (CN)</th>
-        <th>説明 (JP)</th>
-        <th>Count</th>
-      </tr></thead>
-      <tbody id="glossary-body"></tbody>
-    </table>
-  </div>
+<div class="section" id="risk-section" style="display: $riskSectionDisplay;">
+  <h2 data-i18n="riskAnalysis">风险分析</h2>
+  <p style="color:var(--accent-red);margin-bottom:16px;font-size:14px;" data-i18n="riskIndicators">$riskCount 个风险指标已检出</p>
+  <div id="risk-content"></div>
 </div>
 
 <div class="summary-grid">
@@ -572,6 +647,12 @@ tr:hover td { background: var(--bg-tertiary); }
   <div id="ops-chart" class="bar-chart"></div>
 </div>
 
+<div class="section" id="group-breakdown-section" style="display: $groupBreakdownDisplay;">
+  <h2 data-i18n="groupBreakdown">Activity / Operation / Workload 分组排行</h2>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;">AuditGeneralDCR_CL 和 SharePointAuditDCR_CL 使用 Activity + Operation + Workload 组合分组。</p>
+  <div id="group-breakdown-chart" class="bar-chart"></div>
+</div>
+
 <div class="section">
   <h2 data-i18n="topIPs">客户端 IP 排行</h2>
   <div id="ips-chart" class="bar-chart"></div>
@@ -582,10 +663,19 @@ tr:hover td { background: var(--bg-tertiary); }
   <div id="success-ratio"></div>
 </div>
 
-<div class="section" id="risk-section" style="display: $riskSectionDisplay;">
-  <h2 data-i18n="riskAnalysis">风险分析</h2>
-  <p style="color:var(--accent-red);margin-bottom:16px;font-size:14px;" data-i18n="riskIndicators">$riskCount 个风险指标已检出</p>
-  <div id="risk-content"></div>
+<div class="glossary-section">
+  <button class="glossary-toggle" onclick="toggleGlossary()" data-i18n="showGlossary">显示术语表</button>
+  <div class="glossary-content" id="glossary-content">
+    <table class="risk-table">
+      <thead><tr>
+        <th>Operation (EN)</th>
+        <th>说明 (CN)</th>
+        <th>説明 (JP)</th>
+        <th>Count</th>
+      </tr></thead>
+      <tbody id="glossary-body"></tbody>
+    </table>
+  </div>
 </div>
 
 <div class="section">
@@ -625,7 +715,7 @@ const i18n = {
   zh: {
     "totalEvents":"总事件数","uniqueUsers":"唯一用户","uniqueOps":"唯一操作","workloads":"工作负载",
     "success":"成功","failed":"失败","activityTimeline":"活动时间线","workloadDist":"工作负载分布",
-    "topUsers":"活跃用户排行","topOps":"操作类型排行","topIPs":"客户端 IP 排行",
+    "topUsers":"活跃用户排行","topOps":"操作类型排行","groupBreakdown":"Activity / Operation / Workload 分组排行","topIPs":"客户端 IP 排行",
     "successRatio":"成功/失败比率","riskAnalysis":"风险分析","detailedTable":"详细数据",
     "showGlossary":"显示术语表","hideGlossary":"隐藏术语表","metric":"指标","value":"值",
     "severity":"严重程度","unknown":"未知","previous":"上一页","next":"下一页",
@@ -640,7 +730,7 @@ const i18n = {
   ja: {
     "totalEvents":"総イベント数","uniqueUsers":"ユニークユーザー","uniqueOps":"ユニーク操作","workloads":"ワークロード",
     "success":"成功","failed":"失敗","activityTimeline":"アクティビティタイムライン","workloadDist":"ワークロード分布",
-    "topUsers":"アクティブユーザーランキング","topOps":"操作タイプランキング","topIPs":"クライアント IP ランキング",
+    "topUsers":"アクティブユーザーランキング","topOps":"操作タイプランキング","groupBreakdown":"Activity / Operation / Workload グループランキング","topIPs":"クライアント IP ランキング",
     "successRatio":"成功/失敗比率","riskAnalysis":"リスク分析","detailedTable":"詳細データ",
     "showGlossary":"用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
     "severity":"重要度","unknown":"不明","previous":"前へ","next":"次へ",
@@ -749,9 +839,25 @@ function renderBarChart(containerId, data, maxItems) {
   container.innerHTML = html;
 }
 
+function renderCompositeBreakdown(containerId, data) {
+  const container = document.getElementById(containerId);
+  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">No data</p>'; return; }
+  let html = '';
+  data.slice(0, 25).forEach((item, i) => {
+    const color = chartColors[i % chartColors.length];
+    const maxVal = data[0] && data[0].value ? data[0].value : 1;
+    const pct = Math.max((item.value / maxVal) * 100, 2);
+    html += '<div class="bar-item">';
+    html += '<div class="bar-label" style="width:320px">' + item.name + '</div>';
+    html += '<div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '">' + item.value + '</div></div>';
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
 function renderDonut(containerId, data) {
   const container = document.getElementById(containerId);
-  if (!container || !data || data.length === 0) return;
+  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">No data</p>'; return; }
   const total = data.reduce((s, d) => s + d.value, 0);
   const r = 70;
   const circumference = 2 * Math.PI * r;
@@ -777,7 +883,7 @@ function renderDonut(containerId, data) {
 
 function renderTimeline(containerId, data) {
   const container = document.getElementById(containerId);
-  if (!container || !data || data.length === 0) return;
+  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">No data</p>'; return; }
   const maxVal = data.reduce((m, d) => Math.max(m, d.value), 0);
   let html = '';
   data.forEach(item => {
@@ -791,7 +897,7 @@ function renderTimeline(containerId, data) {
 function renderSuccessRatio(containerId, success, fail, unknown) {
   const container = document.getElementById(containerId);
   const total = success + fail + unknown;
-  if (total === 0) return;
+  if (total === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">No data</p>'; return; }
   const sPct = ((success / total) * 100).toFixed(1);
   const fPct = ((fail / total) * 100).toFixed(1);
   const uPct = ((unknown / total) * 100).toFixed(1);
@@ -857,12 +963,12 @@ const riskData = {
   suspiciousIPs: JSON.parse('$suspiciousIPsJson'),
   ipVelocity: JSON.parse('$ipVelocityJson'),
   failCount: $failCount,
-  highPrivCount: $($highPrivEvents.Count),
-  sensitiveCount: $($sensitiveEvents.Count),
-  serviceAcctCount: $($serviceAcctEvents.Count),
-  offHoursCount: $($offHoursEvents.Count),
-  suspiciousCount: $($suspiciousIPs.Count),
-  ipVelocityCount: $($ipVelocity.Count)
+  highPrivCount: $highPrivCount,
+  sensitiveCount: $sensitiveCount,
+  serviceAcctCount: $serviceAcctCount,
+  offHoursCount: $offHoursCount,
+  suspiciousCount: $suspiciousCount,
+  ipVelocityCount: $ipVelocityCount
 };
 
 function buildRiskSection() {
@@ -953,6 +1059,7 @@ document.addEventListener('DOMContentLoaded', function() {
   renderDonut('donut-chart', JSON.parse('$workloadJson'));
   renderBarChart('users-chart', JSON.parse('$topUsersJson'), 15);
   renderBarChart('ops-chart', JSON.parse('$topOpsJson'), 15);
+  renderCompositeBreakdown('group-breakdown-chart', JSON.parse('$operationGroupBreakdownJson'));
   renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10);
   renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
   initPagination();

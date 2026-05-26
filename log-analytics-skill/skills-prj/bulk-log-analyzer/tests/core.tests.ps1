@@ -48,8 +48,30 @@ try {
 Assert-Equal $invalidRangeFailed $true 'Invalid date range should fail.'
 
 $paths = Get-LogArtifactPaths -TempDir 'C:\Temp' -TableName 'AuditGeneralDCR_CL' -AnalysisDateStr '20260524' -Now ([datetime]'2026-05-25T13:45:00')
-Assert-Equal $paths.HtmlFile 'C:\Temp\AuditGeneralDCR_CL_20260525_1345.html' 'HTML file naming mismatch.'
+Assert-Equal $paths.HtmlFile '.\final_report_AuditGeneralDCR_CL_20260524_1345.html' 'HTML file naming mismatch.'
 Assert-Equal $paths.CsvFile 'C:\Temp\AuditGeneralDCR_CL_20260524.csv' 'CSV file naming mismatch.'
+
+$resolvedHtml = Join-Path (Get-Location) $paths.HtmlFile
+if ($resolvedHtml -notlike '*final_report_AuditGeneralDCR_CL_20260524_1345.html') {
+    throw "Relative HTML path should resolve under current repository root, got '$resolvedHtml'."
+}
+if ([System.IO.Path]::IsPathRooted($paths.HtmlFile)) {
+    throw "HTML display path must be relative, got '$($paths.HtmlFile)'."
+}
+if (-not [System.IO.Path]::IsPathRooted($paths.HtmlFilePath)) {
+    throw "HTML write path must be absolute for reliable file creation, got '$($paths.HtmlFilePath)'."
+}
+
+$auditProfile = Get-TableAnalysisProfile -TableName 'AuditGeneralDCR_CL'
+Assert-Equal ($auditProfile.GroupFields -join ',') 'Activity,Operation,Workload' 'AuditGeneral grouping fields mismatch.'
+Assert-Equal $auditProfile.UseCompositeOperationGroup $true 'AuditGeneral should use composite operation grouping.'
+
+$sharePointProfile = Get-TableAnalysisProfile -TableName 'SharePointAuditDCR_CL'
+Assert-Equal ($sharePointProfile.GroupFields -join ',') 'Activity,Operation,Workload' 'SharePointAudit grouping fields mismatch.'
+Assert-Equal $sharePointProfile.UseCompositeOperationGroup $true 'SharePointAudit should use composite operation grouping.'
+
+$groupRow = [PSCustomObject]@{ Activity = 'FileAccessed'; Operation = 'Open'; Workload = 'SharePoint' }
+Assert-Equal (Get-OperationGroupValue -Row $groupRow -TableName 'AuditGeneralDCR_CL') 'FileAccessed | Open | SharePoint' 'Composite operation grouping mismatch.'
 
 $query = New-LogTableQuery -TableName 'WQCLogDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00') -EndTime ([datetime]'2026-05-25T00:00:00')
 if ($query -notmatch '^WQCLogDCR_CL \| where TimeGenerated >= datetime\(2026-05-24T00:00:00') {

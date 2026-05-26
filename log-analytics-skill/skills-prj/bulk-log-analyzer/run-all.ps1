@@ -91,6 +91,7 @@ Write-Host "  EndTime ISO: $($EndTime.ToString('o'))" -ForegroundColor Cyan
 $paths = Get-LogArtifactPaths -TempDir $TempDir -TableName $TableName -AnalysisDateStr $AnalysisDateStr -Now $Now
 $CsvFile = $paths.CsvFile
 $HtmlFile = $paths.HtmlFile
+$HtmlFilePath = $paths.HtmlFilePath
 $CacheCsv = $paths.CacheCsv
 $CacheMeta = $paths.CacheMeta
 
@@ -239,17 +240,17 @@ if ($totalEvents -eq 0) {
 
 $allUsers = @()
 foreach ($row in $data) {
-    $u = if ($row.UserUPN -and $row.UserUPN -ne '') { $row.UserUPN } elseif ($row.UserId -and $row.UserId -ne '') { $row.UserId } else { 'Unknown' }
+    $u = Get-UserValue -Row $row -TableName $TableName
     $allUsers += $u
 }
 $uniqueUsers = ($allUsers | Select-Object -Unique).Count
 
-$allOps = @($data | ForEach-Object { $_.Operation })
+$allOps = @($data | ForEach-Object { Get-OperationValue -Row $_ -TableName $TableName })
 $uniqueOps = ($allOps | Select-Object -Unique).Count
 
 $workloadMap = @{}
 foreach ($row in $data) {
-    $wl = if ($row.Workload) { $row.Workload } else { 'Unknown' }
+    $wl = Get-WorkloadValue -Row $row -TableName $TableName
     $workloadMap[$wl] = ($workloadMap[$wl] + 1)
 }
 
@@ -257,7 +258,7 @@ $successCount = 0
 $failCount = 0
 $unknownCount = 0
 foreach ($row in $data) {
-    $s = $row.IsSuccess
+    $s = Get-SuccessValue -Row $row -TableName $TableName
     if ($s -eq 'true') { $successCount++ }
     elseif ($s -eq 'false') { $failCount++ }
     else { $unknownCount++ }
@@ -272,28 +273,28 @@ Write-Host ""
 # Step 3: Generate HTML
 Write-Host "[3/4] Generating HTML report..." -ForegroundColor Yellow
 
-& "$ScriptDir\analyze.ps1" -CsvPath $CsvFile -OutputPath $HtmlFile -AnalysisDate $AnalysisDateDisplay -TableName $TableName
+& "$ScriptDir\analyze.ps1" -CsvPath $CsvFile -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $TableName
 
-if (-not (Test-Path $HtmlFile)) {
+if (-not (Test-Path $HtmlFilePath)) {
     Write-Host "Error: HTML file not generated" -ForegroundColor Red
     exit 1
 }
 
-Write-Host "HTML report generated: $HtmlFile" -ForegroundColor Green
+Write-Host "HTML report generated: $HtmlFilePath" -ForegroundColor Green
 Write-Host ""
 
 # Step 4: Open in browser
 Write-Host "[4/4] Opening browser..." -ForegroundColor Yellow
 
-$htmlUrl = "file:///$($HtmlFile -replace '\\', '/')"
+$htmlUrl = "file:///$($HtmlFilePath -replace '\\', '/')"
 Write-Host "HTML URL: $htmlUrl" -ForegroundColor Cyan
 
-Start-Process $HtmlFile
+Start-Process $HtmlFilePath
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Magenta
 Write-Host "  Done!" -ForegroundColor Magenta
 Write-Host "============================================" -ForegroundColor Magenta
 Write-Host "CSV: $CsvFile" -ForegroundColor Cyan
-Write-Host "HTML: $HtmlFile" -ForegroundColor Cyan
+Write-Host "HTML: $HtmlFilePath" -ForegroundColor Cyan
 Write-Host "URL: $htmlUrl" -ForegroundColor Cyan
