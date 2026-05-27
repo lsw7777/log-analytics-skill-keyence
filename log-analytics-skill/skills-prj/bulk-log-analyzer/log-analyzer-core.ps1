@@ -221,11 +221,12 @@ function Get-TableAnalysisProfile {
             $common.UseCompositeOperationGroup = $true
         }
         'WQCLogDCR_CL' {
-            $common.UserFields = @('UserPrincipalName', 'UserUPN', 'UserId', 'User', 'Requester', 'Submitter', 'Owner') + $common.UserFields
-            $common.OperationFields = @('Result', 'Action', 'Operation', 'Activity', 'QueryType', 'Command', 'Status') + $common.OperationFields
+            $common.UserFields = @('CurrentMail', 'CurrentUsername', 'ForwardtoMail', 'ForwardtoUsername', 'UserPrincipalName', 'UserUPN', 'UserId', 'User', 'Requester', 'Submitter', 'Owner') + $common.UserFields
+            $common.OperationFields = @('OperationType', 'InboxRuleName', 'Result', 'Action', 'Operation', 'Activity', 'QueryType', 'Command', 'Status') + $common.OperationFields
             $common.WorkloadFields = @('Workload', 'Service', 'Category', 'SourceSystem') + $common.WorkloadFields
             $common.DefaultOperation = 'WQC Log Event'
             $common.DefaultWorkload = 'WQC'
+            $common.DefaultSuccess = 'true'
         }
     }
 
@@ -297,7 +298,29 @@ function Get-SuccessValue {
     $value = (Get-FieldValue -Row $Row -Names $profile.SuccessFields -Default $profile.DefaultSuccess).ToLowerInvariant()
     if ($value -match '^(true|success|succeeded|delivered|expanded|completed|complete|ok|pass|passed|0)$') { return 'true' }
     if ($value -match '^(false|fail|failed|failure|undelivered|blocked|rejected|denied|error|timeout|quarantined|1)$') { return 'false' }
+    if ($profile.DefaultSuccess -eq 'true') { return 'true' }
     return 'unknown'
+}
+
+function Get-LogCacheTimeKey {
+    param([datetime]$Time)
+    return $Time.ToUniversalTime().ToString('o')
+}
+
+function Test-LogCacheMetadataMatches {
+    param(
+        [object]$Meta,
+        [string]$TableName,
+        [datetime]$StartTime,
+        [datetime]$EndTime
+    )
+
+    if ($null -eq $Meta) { return $false }
+    if ($Meta.TableName -ne $TableName) { return $false }
+    if (-not $Meta.StartTimeUtc -or -not $Meta.EndTimeUtc) { return $false }
+    if ($Meta.StartTimeUtc -ne (Get-LogCacheTimeKey -Time $StartTime)) { return $false }
+    if ($Meta.EndTimeUtc -ne (Get-LogCacheTimeKey -Time $EndTime)) { return $false }
+    return $true
 }
 
 function Get-OperationGroupValue {
@@ -367,7 +390,7 @@ function New-LogTableQuery {
         throw "Unsupported log table: $TableName"
     }
 
-    $start = $StartTime.ToString('yyyy-MM-ddTHH:mm:ss')
-    $end = $EndTime.ToString('yyyy-MM-ddTHH:mm:ss')
+    $start = $StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $end = $EndTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     return "$TableName | where TimeGenerated >= datetime($start) and TimeGenerated < datetime($end) | sort by TimeGenerated desc"
 }

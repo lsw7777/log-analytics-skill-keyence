@@ -119,7 +119,10 @@ function Test-Cache {
     param(
         [string]$CacheCsv,
         [string]$CacheMeta,
-        [int]$CacheTTL
+        [int]$CacheTTL,
+        [string]$TableName,
+        [datetime]$StartTime,
+        [datetime]$EndTime
     )
 
     if (-not (Test-Path $CacheCsv)) {
@@ -132,6 +135,10 @@ function Test-Cache {
 
     try {
         $meta = Get-Content $CacheMeta -Raw | ConvertFrom-Json
+        if (-not (Test-LogCacheMetadataMatches -Meta $meta -TableName $TableName -StartTime $StartTime -EndTime $EndTime)) {
+            return @{ Hit = $false; Reason = 'Cache metadata does not match table and time range' }
+        }
+
         $cacheTime = [DateTime]::Parse($meta.CacheTime)
         $age = (Get-Date) - $cacheTime
         $ttlHours = if ($meta.CacheTTL) { $meta.CacheTTL } else { $CacheTTL }
@@ -158,7 +165,9 @@ function Save-Cache {
         [string]$CacheCsv,
         [string]$CacheMeta,
         [string]$TableName,
-        [int]$CacheTTL
+        [int]$CacheTTL,
+        [datetime]$StartTime,
+        [datetime]$EndTime
     )
 
     Copy-Item -Path $SourceCsv -Destination $CacheCsv -Force
@@ -170,6 +179,8 @@ function Save-Cache {
         CacheTTL = $CacheTTL
         RecordCount = $recordCount
         Hours = $Hours
+        StartTimeUtc = Get-LogCacheTimeKey -Time $StartTime
+        EndTimeUtc = Get-LogCacheTimeKey -Time $EndTime
     }
     $meta | ConvertTo-Json | Out-File -FilePath $CacheMeta -Encoding UTF8 -Force
 
@@ -183,7 +194,7 @@ Write-Host "[1/4] Checking data source..." -ForegroundColor Yellow
 
 $cacheResult = $null
 if ($UseCache -and -not $ForceRefresh) {
-    $cacheResult = Test-Cache -CacheCsv $CacheCsv -CacheMeta $CacheMeta -CacheTTL $CacheTTL
+    $cacheResult = Test-Cache -CacheCsv $CacheCsv -CacheMeta $CacheMeta -CacheTTL $CacheTTL -TableName $TableName -StartTime $StartTime -EndTime $EndTime
 }
 
 if ($cacheResult -and $cacheResult.Hit) {
@@ -220,7 +231,7 @@ if ($cacheResult -and $cacheResult.Hit) {
 
     # Save to cache
     if ($UseCache) {
-        Save-Cache -SourceCsv $CsvFile -CacheCsv $CacheCsv -CacheMeta $CacheMeta -TableName $TableName -CacheTTL $CacheTTL
+        Save-Cache -SourceCsv $CsvFile -CacheCsv $CacheCsv -CacheMeta $CacheMeta -TableName $TableName -CacheTTL $CacheTTL -StartTime $StartTime -EndTime $EndTime
     }
 
     Write-Host "Data query complete!" -ForegroundColor Green

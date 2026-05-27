@@ -73,12 +73,21 @@ Assert-Equal $sharePointProfile.UseCompositeOperationGroup $true 'SharePointAudi
 $groupRow = [PSCustomObject]@{ Activity = 'FileAccessed'; Operation = 'Open'; Workload = 'SharePoint' }
 Assert-Equal (Get-OperationGroupValue -Row $groupRow -TableName 'AuditGeneralDCR_CL') 'FileAccessed | Open | SharePoint' 'Composite operation grouping mismatch.'
 
-$query = New-LogTableQuery -TableName 'WQCLogDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00') -EndTime ([datetime]'2026-05-25T00:00:00')
-if ($query -notmatch '^WQCLogDCR_CL \| where TimeGenerated >= datetime\(2026-05-24T00:00:00') {
+$query = New-LogTableQuery -TableName 'WQCLogDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')
+if ($query -notmatch '^WQCLogDCR_CL \| where TimeGenerated >= datetime\(2026-05-23T16:00:00Z') {
     throw "Query does not start with expected table and start filter: $query"
 }
-if ($query -notmatch 'TimeGenerated < datetime\(2026-05-25T00:00:00') {
+if ($query -notmatch 'TimeGenerated < datetime\(2026-05-24T16:00:00Z') {
     throw "Query does not include expected end filter: $query"
 }
+
+$matchingMeta = [PSCustomObject]@{
+    TableName = 'AuditGeneralDCR_CL'
+    StartTimeUtc = Get-LogCacheTimeKey -Time ([datetime]'2026-05-24T00:00:00+08:00')
+    EndTimeUtc = Get-LogCacheTimeKey -Time ([datetime]'2026-05-25T00:00:00+08:00')
+}
+Assert-Equal (Test-LogCacheMetadataMatches -Meta $matchingMeta -TableName 'AuditGeneralDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')) $true 'Cache metadata should match same table and time range.'
+Assert-Equal (Test-LogCacheMetadataMatches -Meta $matchingMeta -TableName 'AuditGeneralDCR_CL' -StartTime ([datetime]'2026-05-24T01:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')) $false 'Cache metadata should reject different time range.'
+Assert-Equal (Test-LogCacheMetadataMatches -Meta $matchingMeta -TableName 'WQCLogDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')) $false 'Cache metadata should reject different table.'
 
 Write-Host 'core.tests.ps1 passed' -ForegroundColor Green

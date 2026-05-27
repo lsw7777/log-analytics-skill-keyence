@@ -31,13 +31,33 @@ Write-Host "Computing statistics..." -ForegroundColor Cyan
 $analysisProfile = Get-TableAnalysisProfile -TableName $TableName
 $timelineTitleZh = '活动时间线'
 $timelineTitleJa = 'アクティビティタイムライン'
-$timelineNote = ''
-$clientIpEmptyMessage = 'No client IP data available.'
+$timelineNoteKey = ''
+$timelineNoteZh = ''
+$timelineNoteJa = ''
+$clientIpEmptyKey = 'clientIpNoDataGeneric'
+$statusNoteKey = ''
+$statusNoteZh = ''
+$statusNoteJa = ''
 if ($TableName -eq 'AzureADUsersDCR_CL') {
     $timelineTitleZh = '用户目录快照时间'
     $timelineTitleJa = 'ユーザーディレクトリスナップショット時刻'
-    $timelineNote = 'AzureADUsersDCR_CL is a directory snapshot table; TimeGenerated is ingestion time, not user activity time.'
-    $clientIpEmptyMessage = 'This table does not include client IP fields.'
+    $timelineNoteKey = 'timelineNoteAzureAD'
+    $timelineNoteZh = 'AzureADUsersDCR_CL 是用户目录快照表；TimeGenerated 是本批数据写入 Log Analytics 的时间，不是用户真实活动时间。'
+    $timelineNoteJa = 'AzureADUsersDCR_CL はユーザーディレクトリのスナップショットテーブルです。TimeGenerated は Log Analytics への取り込み時刻であり、実際のユーザー操作時刻ではありません。'
+    $clientIpEmptyKey = 'clientIpEmptyAzureAD'
+}
+elseif ($TableName -eq 'MailboxStatisticsDCR_CL') {
+    $timelineTitleZh = '邮箱统计快照时间'
+    $timelineTitleJa = 'メールボックス統計スナップショット時刻'
+    $timelineNoteKey = 'timelineNoteMailbox'
+    $timelineNoteZh = 'MailboxStatisticsDCR_CL 是邮箱容量快照表；TimeGenerated 是本批统计数据写入 Log Analytics 的时间，不是邮箱用户活动时间。'
+    $timelineNoteJa = 'MailboxStatisticsDCR_CL はメールボックス容量統計のスナップショットテーブルです。TimeGenerated は統計データが Log Analytics に取り込まれた時刻であり、メールボックス利用者の操作時刻ではありません。'
+    $clientIpEmptyKey = 'clientIpEmptyMailbox'
+}
+elseif ($TableName -eq 'WQCLogDCR_CL') {
+    $statusNoteKey = 'statusNoteWQC'
+    $statusNoteZh = 'WQCLogDCR_CL 不提供单条记录的失败状态；成功/失败比率按已采集规则记录展示，真实日志类型来自 OperationType。'
+    $statusNoteJa = 'WQCLogDCR_CL は各レコードの失敗状態を提供しません。成功/失敗比率は収集済みルールレコードとして表示し、実際のログ種別は OperationType から取得します。'
 }
 
 function Get-FieldValue {
@@ -286,6 +306,11 @@ foreach ($row in $data) {
     if ($s -eq 'true') { $successCount++ }
     elseif ($s -eq 'false') { $failCount++ }
     else { $unknownCount++ }
+}
+if ($unknownCount -gt 0 -and -not $statusNoteKey) {
+    $statusNoteKey = 'statusUnknownNote'
+    $statusNoteZh = '未知表示源日志没有提供 IsSuccess、ResultStatus、Status 或 Result 等可判断成功/失败的字段，或该事件类型本身没有成功/失败语义。'
+    $statusNoteJa = '不明は、元ログに IsSuccess、ResultStatus、Status、Result など成功/失敗を判断できるフィールドがない、またはそのイベント種別自体に成功/失敗の意味がないことを示します。'
 }
 
 # Activity timeline (by hour)
@@ -740,7 +765,7 @@ tr:hover td { background: var(--bg-tertiary); }
 
 <div class="section">
   <h2 data-i18n="activityTimeline">活动时间线</h2>
-  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;">$timelineNote</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;" data-i18n="$timelineNoteKey">$timelineNoteZh</p>
   <div id="timeline-chart"></div>
 </div>
 
@@ -773,6 +798,7 @@ tr:hover td { background: var(--bg-tertiary); }
 <div class="section">
   <h2 data-i18n="successRatio">成功/失败比率</h2>
   <div id="success-ratio"></div>
+  <p style="color:var(--text-secondary);font-size:13px;margin-top:12px;" data-i18n="$statusNoteKey">$statusNoteZh</p>
 </div>
 
 <div class="glossary-section">
@@ -837,7 +863,14 @@ const i18n = {
     "failedOps":"失败操作","suspiciousIPs":"可疑 IP","offHours":"非工作时间活动",
     "highPrivOps":"高权限操作","sensitiveData":"敏感数据事件","ipVelocity":"IP 多用户关联",
     "serviceAccounts":"服务账户活动","low":"低风险","medium":"中风险","high":"高风险",
-    "offHoursUsers":"非工作时活跃用户","failedOpSummary":"失败操作汇总","count":"次数"
+    "offHoursUsers":"非工作时活跃用户","failedOpSummary":"失败操作汇总","count":"次数",
+    "timelineNoteAzureAD":"AzureADUsersDCR_CL 是用户目录快照表；TimeGenerated 是本批数据写入 Log Analytics 的时间，不是用户真实活动时间。",
+    "timelineNoteMailbox":"MailboxStatisticsDCR_CL 是邮箱容量快照表；TimeGenerated 是本批统计数据写入 Log Analytics 的时间，不是邮箱用户活动时间。",
+    "clientIpNoDataGeneric":"无可用客户端 IP 数据。",
+    "clientIpEmptyAzureAD":"此表不包含客户端 IP 字段；它是用户目录快照数据，不记录登录或访问来源 IP。",
+    "clientIpEmptyMailbox":"此表不包含客户端 IP 字段；它是邮箱容量统计快照，不记录客户端访问来源 IP。",
+    "statusUnknownNote":"未知表示源日志没有提供 IsSuccess、ResultStatus、Status 或 Result 等可判断成功/失败的字段，或该事件类型本身没有成功/失败语义。",
+    "statusNoteWQC":"WQCLogDCR_CL 不提供单条记录的失败状态；成功/失败比率按已采集规则记录展示，真实日志类型来自 OperationType。"
   },
   ja: {
     "totalEvents":"総イベント数","uniqueUsers":"ユニークユーザー","uniqueOps":"ユニーク操作","workloads":"ワークロード",
@@ -852,7 +885,14 @@ const i18n = {
     "failedOps":"失敗した操作","suspiciousIPs":"不審な IP","offHours":"時間外のアクティビティ",
     "highPrivOps":"高権限操作","sensitiveData":"機密データイベント","ipVelocity":"IP 複数ユーザー",
     "serviceAccounts":"サービスアカウント","low":"低リスク","medium":"中リスク","high":"高リスク",
-    "offHoursUsers":"時間外アクティブユーザー","failedOpSummary":"失敗操作まとめ","count":"回数"
+    "offHoursUsers":"時間外アクティブユーザー","failedOpSummary":"失敗操作まとめ","count":"回数",
+    "timelineNoteAzureAD":"AzureADUsersDCR_CL はユーザーディレクトリのスナップショットテーブルです。TimeGenerated は Log Analytics への取り込み時刻であり、実際のユーザー操作時刻ではありません。",
+    "timelineNoteMailbox":"MailboxStatisticsDCR_CL はメールボックス容量統計のスナップショットテーブルです。TimeGenerated は統計データが Log Analytics に取り込まれた時刻であり、メールボックス利用者の操作時刻ではありません。",
+    "clientIpNoDataGeneric":"利用可能なクライアント IP データはありません。",
+    "clientIpEmptyAzureAD":"このテーブルにはクライアント IP フィールドがありません。ユーザーディレクトリのスナップショットであり、ログインやアクセス元 IP は記録されません。",
+    "clientIpEmptyMailbox":"このテーブルにはクライアント IP フィールドがありません。メールボックス容量統計のスナップショットであり、クライアントアクセス元 IP は記録されません。",
+    "statusUnknownNote":"不明は、元ログに IsSuccess、ResultStatus、Status、Result など成功/失敗を判断できるフィールドがない、またはそのイベント種別自体に成功/失敗の意味がないことを示します。",
+    "statusNoteWQC":"WQCLogDCR_CL は各レコードの失敗状態を提供しません。成功/失敗比率は収集済みルールレコードとして表示し、実際のログ種別は OperationType から取得します。"
   }
 };
 
@@ -932,10 +972,11 @@ document.addEventListener('mouseout', function(e) {
 // ===== Render Charts =====
 const chartColors = ['#58a6ff','#3fb950','#bc8cff','#f0883e','#f85149','#39d2c0'];
 
-function renderBarChart(containerId, data, maxItems, emptyMessage) {
+function renderBarChart(containerId, data, maxItems, emptyMessageKey) {
   const container = document.getElementById(containerId);
-  const message = emptyMessage || 'No data';
-  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">' + message + '</p>'; return; }
+  const messageKey = emptyMessageKey || 'clientIpNoDataGeneric';
+  const message = (i18n[currentLang] && i18n[currentLang][messageKey]) || 'No data';
+  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)" data-i18n="' + messageKey + '">' + message + '</p>'; return; }
   const items = data.slice(0, maxItems);
   const maxVal = items.length > 0 ? items[0].value : 1;
   let html = '';
@@ -1173,7 +1214,7 @@ document.addEventListener('DOMContentLoaded', function() {
   renderBarChart('users-chart', JSON.parse('$topUsersJson'), 15);
   renderBarChart('ops-chart', JSON.parse('$topOpsJson'), 15);
   renderCompositeBreakdown('group-breakdown-chart', JSON.parse('$operationGroupBreakdownJson'));
-  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10, '$clientIpEmptyMessage');
+  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10, '$clientIpEmptyKey');
   renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
   initPagination();
   buildRiskSection();
