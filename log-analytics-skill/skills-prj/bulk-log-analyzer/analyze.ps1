@@ -155,10 +155,89 @@ function Get-SafeCount {
     return @($Value).Count
 }
 
+function Add-UserDisplayNameMapping {
+    param(
+        [hashtable]$Map,
+        [object]$Row
+    )
+
+    $displayName = Get-FieldValue -Row $Row -Names @('displayName', 'DisplayName') -Default ''
+    if (-not $displayName) { return }
+
+    $identifiers = @(
+        (Get-FieldValue -Row $Row -Names @('userPrincipalName', 'UserPrincipalName', 'UserUPN', 'UPN') -Default ''),
+        (Get-FieldValue -Row $Row -Names @('mail', 'Mail', 'EmailAddress') -Default '')
+    )
+
+    foreach ($identifier in $identifiers) {
+        if ($identifier -and $identifier -match '@') {
+            $key = $identifier.ToLowerInvariant()
+            if (-not $Map.ContainsKey($key)) {
+                $Map[$key] = $displayName
+            }
+        }
+    }
+}
+
+function Get-UserDisplayNameMap {
+    param(
+        [array]$CurrentData,
+        [string]$CsvPath,
+        [string]$TableName
+    )
+
+    $map = @{}
+    if ($TableName -eq 'AzureADUsersDCR_CL') {
+        foreach ($row in $CurrentData) {
+            Add-UserDisplayNameMapping -Map $map -Row $row
+        }
+    }
+
+    $csvDir = Split-Path -Parent $CsvPath
+    $candidateFiles = @()
+    if (Test-Path $csvDir) {
+        $candidateFiles += @(Get-ChildItem -Path $csvDir -Filter 'AzureADUsersDCR_CL*.csv' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3)
+        $cacheDir = Join-Path $csvDir 'cache'
+        if (Test-Path $cacheDir) {
+            $candidateFiles += @(Get-ChildItem -Path $cacheDir -Filter 'AzureADUsersDCR_CL*.csv' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3)
+        }
+    }
+
+    foreach ($file in $candidateFiles) {
+        try {
+            foreach ($row in @(Import-Csv -Path $file.FullName -Encoding UTF8)) {
+                Add-UserDisplayNameMapping -Map $map -Row $row
+            }
+        } catch {}
+    }
+
+    return $map
+}
+
+function Format-UserDisplayValue {
+    param([string]$User)
+
+    if (-not $User) { return $User }
+    $emailPattern = '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
+    return [regex]::Replace($User, $emailPattern, {
+        param($match)
+        $email = $match.Value
+        $key = $email.ToLowerInvariant()
+        if ($script:userDisplayNameMap.ContainsKey($key)) {
+            $name = $script:userDisplayNameMap[$key]
+            if ($User -like "$name ($email)*") { return $email }
+            return "$name ($email)"
+        }
+        return $email
+    }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+}
+
+$script:userDisplayNameMap = Get-UserDisplayNameMap -CurrentData $data -CsvPath $csvPath -TableName $TableName
+
 # Unique users
 $allUsers = @()
 foreach ($row in $data) {
-    $u = Get-UserValue -Row $row
+    $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
     $allUsers += $u
 }
 $uniqueUsers = ($allUsers | Select-Object -Unique).Count
@@ -252,7 +331,7 @@ $highPrivOps = @('ExportReport', 'Search', 'EditDataset', 'Delete', 'DeleteDatas
 $highPrivEvents = @($data | Where-Object { Test-OperationContains -Row $_ -Operations $highPrivOps })
 $highPrivByUser = @{}
 foreach ($row in $highPrivEvents) {
-    $u = Get-UserValue -Row $row
+    $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
     $key = "$u | $(Get-OperationValue -Row $row)"
     $highPrivByUser[$key] = ($highPrivByUser[$key] + 1)
 }
@@ -282,7 +361,7 @@ $ipUsers = @{}
 foreach ($row in $data) {
     $ip = Get-ClientIpValue -Row $row
     if (-not (Test-UsableIpValue -IP $ip)) { continue }
-    $u = Get-UserValue -Row $row
+    $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
     if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
     $ipUsers[$ip][$u] = 1
 }
@@ -326,7 +405,7 @@ $suspiciousIPs = $suspiciousIPs | Sort-Object WorkloadCount -Descending
 # Off-hours by user
 $offHoursByUser = @{}
 foreach ($row in $offHoursEvents) {
-    $u = Get-UserValue -Row $row
+    $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
     $offHoursByUser[$u] = ($offHoursByUser[$u] + 1)
 }
 $offHoursByUser = $offHoursByUser.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 15
@@ -483,7 +562,7 @@ $previewRows = [Math]::Min(500, $data.Count)
 for ($i = 0; $i -lt $previewRows; $i++) {
     $row = $data[$i]
     $tg = if ($row.TimeGenerated) { $row.TimeGenerated } else { '' }
-    $user = Get-UserValue -Row $row
+    $user = Format-UserDisplayValue -User (Get-UserValue -Row $row)
     $op = Get-OperationValue -Row $row
     $wl = Get-WorkloadValue -Row $row
     $ip = Get-ClientIpValue -Row $row
