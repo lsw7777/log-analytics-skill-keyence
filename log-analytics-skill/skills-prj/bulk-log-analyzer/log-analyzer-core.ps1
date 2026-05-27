@@ -190,9 +190,9 @@ function Get-TableAnalysisProfile {
             $common.UseCompositeOperationGroup = $true
         }
         'AzureADUsersDCR_CL' {
-            $common.UserFields = @('UserPrincipalName', 'UserUPN', 'UPN', 'Mail', 'EmailAddress', 'DisplayName', 'Id', 'ObjectId') + $common.UserFields
-            $common.OperationFields = @('AccountEnabled', 'UserType', 'JobTitle', 'Department', 'CreatedDateTime') + $common.OperationFields
-            $common.WorkloadFields = @('Workload', 'SourceSystem', 'UserType', 'Department') + $common.WorkloadFields
+            $common.UserFields = @('userPrincipalName', 'mail', 'displayName', 'UserPrincipalName', 'UserUPN', 'UPN', 'Mail', 'EmailAddress', 'DisplayName', 'Id', 'ObjectId') + $common.UserFields
+            $common.OperationFields = @('department', 'jobTitle', 'companyName', 'Department', 'JobTitle', 'CompanyName') + $common.OperationFields
+            $common.WorkloadFields = @('department', 'companyName', 'jobTitle', 'Workload', 'SourceSystem', 'UserType', 'Department') + $common.WorkloadFields
             $common.DefaultOperation = 'Azure AD User Record'
             $common.DefaultWorkload = 'AzureActiveDirectory'
             $common.DefaultSuccess = 'true'
@@ -264,6 +264,17 @@ function Get-UserValue {
 function Get-OperationValue {
     param([object]$Row, [string]$TableName)
     $profile = Get-TableAnalysisProfile -TableName $TableName
+    if ($TableName -eq 'AzureADUsersDCR_CL') {
+        $enabledRaw = (Get-FieldValue -Row $Row -Names @('accountEnabled', 'AccountEnabled') -Default '').ToLowerInvariant()
+        $status = if ($enabledRaw -eq 'false') { 'Disabled Account' } elseif ($enabledRaw -eq 'true') { 'Enabled Account' } else { 'Account Status Unknown' }
+        $department = Get-FieldValue -Row $Row -Names @('department', 'Department') -Default ''
+        if ($department) { return "$status | Department: $department" }
+        $company = Get-FieldValue -Row $Row -Names @('companyName', 'CompanyName') -Default ''
+        if ($company) { return "$status | Company: $company" }
+        $jobTitle = Get-FieldValue -Row $Row -Names @('jobTitle', 'JobTitle') -Default ''
+        if ($jobTitle) { return "$status | JobTitle: $jobTitle" }
+        return "$status | Department: Unassigned"
+    }
     return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
 }
 

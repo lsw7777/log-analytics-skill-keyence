@@ -29,6 +29,16 @@ Write-Host "Loaded $totalEvents records" -ForegroundColor Green
 
 Write-Host "Computing statistics..." -ForegroundColor Cyan
 $analysisProfile = Get-TableAnalysisProfile -TableName $TableName
+$timelineTitleZh = '活动时间线'
+$timelineTitleJa = 'アクティビティタイムライン'
+$timelineNote = ''
+$clientIpEmptyMessage = 'No client IP data available.'
+if ($TableName -eq 'AzureADUsersDCR_CL') {
+    $timelineTitleZh = '用户目录快照时间'
+    $timelineTitleJa = 'ユーザーディレクトリスナップショット時刻'
+    $timelineNote = 'AzureADUsersDCR_CL is a directory snapshot table; TimeGenerated is ingestion time, not user activity time.'
+    $clientIpEmptyMessage = 'This table does not include client IP fields.'
+}
 
 function Get-FieldValue {
     param(
@@ -60,6 +70,17 @@ function Get-OperationValue {
     param([object]$Row)
 
     $profile = Get-TableAnalysisProfile -TableName $TableName
+    if ($TableName -eq 'AzureADUsersDCR_CL') {
+        $enabledRaw = (Get-FieldValue -Row $Row -Names @('accountEnabled', 'AccountEnabled') -Default '').ToLowerInvariant()
+        $status = if ($enabledRaw -eq 'false') { 'Disabled Account' } elseif ($enabledRaw -eq 'true') { 'Enabled Account' } else { 'Account Status Unknown' }
+        $department = Get-FieldValue -Row $Row -Names @('department', 'Department') -Default ''
+        if ($department) { return "$status | Department: $department" }
+        $company = Get-FieldValue -Row $Row -Names @('companyName', 'CompanyName') -Default ''
+        if ($company) { return "$status | Company: $company" }
+        $jobTitle = Get-FieldValue -Row $Row -Names @('jobTitle', 'JobTitle') -Default ''
+        if ($jobTitle) { return "$status | JobTitle: $jobTitle" }
+        return "$status | Department: Unassigned"
+    }
     if (-not $profile.UseCompositeOperationGroup) {
         return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
     }
@@ -172,6 +193,7 @@ $topOps = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object
 $ipMap = @{}
 foreach ($row in $data) {
     $ip = Get-ClientIpValue -Row $row
+    if (-not (Test-UsableIpValue -IP $ip)) { continue }
     $ipMap[$ip] = ($ipMap[$ip] + 1)
 }
 $topIPs = $ipMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10
@@ -331,6 +353,15 @@ foreach ($op in $opNames) {
     $expZh = $op  # default fallback
     $expJa = $op
     # Known glossary entries
+    if ($TableName -eq 'AzureADUsersDCR_CL' -and $op -like 'Enabled Account*') {
+        $expZh = '已启用用户账户（accountEnabled=true）；后缀表示该账号的部门、公司或职务分类。'
+        $expJa = '有効なユーザーアカウント（accountEnabled=true）。末尾は部門、会社、または役職の分類を示します。'
+    }
+    elseif ($TableName -eq 'AzureADUsersDCR_CL' -and $op -like 'Disabled Account*') {
+        $expZh = '已禁用用户账户（accountEnabled=false）；后缀表示该账号的部门、公司或职务分类。'
+        $expJa = '無効なユーザーアカウント（accountEnabled=false）。末尾は部門、会社、または役職の分類を示します。'
+    }
+    else {
     switch ($op) {
         'ViewReport'        { $expZh = '查看 PowerBI 报表'; $expJa = 'PowerBI レポートを閲覧' }
         'GetWorkspaces'     { $expZh = '获取工作区列表'; $expJa = 'ワークスペース一覧を取得' }
@@ -352,6 +383,7 @@ foreach ($op in $opNames) {
         'CreateReport'      { $expZh = '创建报表'; $expJa = 'レポートを作成' }
         'Publish'           { $expZh = '发布内容'; $expJa = 'コンテンツを公開' }
         default             { $expZh = $op; $expJa = $op }
+    }
     }
     $glossaryOps[$op] = @{ zh = $expZh; ja = $expJa; count = $opMap[$op] }
 }
@@ -629,6 +661,7 @@ tr:hover td { background: var(--bg-tertiary); }
 
 <div class="section">
   <h2 data-i18n="activityTimeline">活动时间线</h2>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;">$timelineNote</p>
   <div id="timeline-chart"></div>
 </div>
 
@@ -714,7 +747,7 @@ let currentLang = 'zh';
 const i18n = {
   zh: {
     "totalEvents":"总事件数","uniqueUsers":"唯一用户","uniqueOps":"唯一操作","workloads":"工作负载",
-    "success":"成功","failed":"失败","activityTimeline":"活动时间线","workloadDist":"工作负载分布",
+    "success":"成功","failed":"失败","activityTimeline":"$timelineTitleZh","workloadDist":"工作负载分布",
     "topUsers":"活跃用户排行","topOps":"操作类型排行","groupBreakdown":"Activity / Operation / Workload 分组排行","topIPs":"客户端 IP 排行",
     "successRatio":"成功/失败比率","riskAnalysis":"风险分析","detailedTable":"详细数据",
     "showGlossary":"显示术语表","hideGlossary":"隐藏术语表","metric":"指标","value":"值",
@@ -729,7 +762,7 @@ const i18n = {
   },
   ja: {
     "totalEvents":"総イベント数","uniqueUsers":"ユニークユーザー","uniqueOps":"ユニーク操作","workloads":"ワークロード",
-    "success":"成功","failed":"失敗","activityTimeline":"アクティビティタイムライン","workloadDist":"ワークロード分布",
+    "success":"成功","failed":"失敗","activityTimeline":"$timelineTitleJa","workloadDist":"ワークロード分布",
     "topUsers":"アクティブユーザーランキング","topOps":"操作タイプランキング","groupBreakdown":"Activity / Operation / Workload グループランキング","topIPs":"クライアント IP ランキング",
     "successRatio":"成功/失敗比率","riskAnalysis":"リスク分析","detailedTable":"詳細データ",
     "showGlossary":"用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
@@ -820,9 +853,10 @@ document.addEventListener('mouseout', function(e) {
 // ===== Render Charts =====
 const chartColors = ['#58a6ff','#3fb950','#bc8cff','#f0883e','#f85149','#39d2c0'];
 
-function renderBarChart(containerId, data, maxItems) {
+function renderBarChart(containerId, data, maxItems, emptyMessage) {
   const container = document.getElementById(containerId);
-  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">No data</p>'; return; }
+  const message = emptyMessage || 'No data';
+  if (!container || !data || data.length === 0) { container.innerHTML = '<p style="color:var(--text-secondary)">' + message + '</p>'; return; }
   const items = data.slice(0, maxItems);
   const maxVal = items.length > 0 ? items[0].value : 1;
   let html = '';
@@ -1060,7 +1094,7 @@ document.addEventListener('DOMContentLoaded', function() {
   renderBarChart('users-chart', JSON.parse('$topUsersJson'), 15);
   renderBarChart('ops-chart', JSON.parse('$topOpsJson'), 15);
   renderCompositeBreakdown('group-breakdown-chart', JSON.parse('$operationGroupBreakdownJson'));
-  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10);
+  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10, '$clientIpEmptyMessage');
   renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
   initPagination();
   buildRiskSection();
