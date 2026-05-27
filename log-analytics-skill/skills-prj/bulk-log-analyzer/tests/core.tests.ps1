@@ -90,4 +90,38 @@ Assert-Equal (Test-LogCacheMetadataMatches -Meta $matchingMeta -TableName 'Audit
 Assert-Equal (Test-LogCacheMetadataMatches -Meta $matchingMeta -TableName 'AuditGeneralDCR_CL' -StartTime ([datetime]'2026-05-24T01:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')) $false 'Cache metadata should reject different time range.'
 Assert-Equal (Test-LogCacheMetadataMatches -Meta $matchingMeta -TableName 'WQCLogDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')) $false 'Cache metadata should reject different table.'
 
+$cachePayloadDir = Join-Path ([System.IO.Path]::GetTempPath()) 'log-analyzer-cache-payload-tests'
+if (Test-Path $cachePayloadDir) { Remove-Item -Path $cachePayloadDir -Recurse -Force }
+New-Item -ItemType Directory -Path $cachePayloadDir -Force | Out-Null
+$emptyCsv = Join-Path $cachePayloadDir 'empty.csv'
+$headerOnlyCsv = Join-Path $cachePayloadDir 'header-only.csv'
+$dataCsv = Join-Path $cachePayloadDir 'data.csv'
+'' | Out-File -FilePath $emptyCsv -Encoding UTF8 -Force
+'"TimeGenerated"' | Out-File -FilePath $headerOnlyCsv -Encoding UTF8 -Force
+'"TimeGenerated"' | Out-File -FilePath $dataCsv -Encoding UTF8 -Force
+'"2026-05-26T00:00:00Z"' | Out-File -FilePath $dataCsv -Encoding UTF8 -Append
+Assert-Equal (Get-LogCsvRecordCount -CsvPath $emptyCsv) 0 'Empty CSV should have zero records.'
+Assert-Equal (Get-LogCsvRecordCount -CsvPath $headerOnlyCsv) 0 'Header-only CSV should have zero records.'
+Assert-Equal (Get-LogCsvRecordCount -CsvPath $dataCsv) 1 'Data CSV should count records.'
+Assert-Equal (Test-LogCachePayloadValid -CacheCsv $emptyCsv -RecordCount 0) $false 'Zero-record empty cache payload should be invalid.'
+Assert-Equal (Test-LogCachePayloadValid -CacheCsv $headerOnlyCsv -RecordCount 0) $false 'Zero-record header-only cache payload should be invalid.'
+Assert-Equal (Test-LogCachePayloadValid -CacheCsv $dataCsv -RecordCount 1) $true 'Non-empty cache payload should be valid.'
+
+$clearCacheDir = Join-Path ([System.IO.Path]::GetTempPath()) 'log-analyzer-clear-cache-tests'
+if (Test-Path $clearCacheDir) { Remove-Item -Path $clearCacheDir -Recurse -Force }
+New-Item -ItemType Directory -Path $clearCacheDir -Force | Out-Null
+'x' | Out-File -FilePath (Join-Path $clearCacheDir 'sample.csv') -Encoding UTF8 -Force
+'{}' | Out-File -FilePath (Join-Path $clearCacheDir 'sample.meta.json') -Encoding UTF8 -Force
+Clear-LogCache -CacheDir $clearCacheDir | Out-Null
+if (-not (Test-Path $clearCacheDir)) { throw 'Clear cache should preserve cache directory.' }
+Assert-Equal @(Get-ChildItem -Path $clearCacheDir -Force).Count 0 'Clear cache should remove all cache entries.'
+
+$explicitRangeMode = Get-LogQueryExecutionMode -QueryStartTime ([datetime]'2026-05-25T16:00:00Z') -QueryEndTime ([datetime]'2026-05-26T16:00:00Z') -Hours 24
+Assert-Equal $explicitRangeMode.UseTimespan $false 'Explicit date range should not use relative timespan.'
+Assert-Equal $explicitRangeMode.Timespan $null 'Explicit date range should not set timespan.'
+
+$relativeRangeMode = Get-LogQueryExecutionMode -Hours 24
+Assert-Equal $relativeRangeMode.UseTimespan $true 'Relative query should use timespan.'
+Assert-Equal $relativeRangeMode.Timespan.TotalHours 24 'Relative query timespan mismatch.'
+
 Write-Host 'core.tests.ps1 passed' -ForegroundColor Green

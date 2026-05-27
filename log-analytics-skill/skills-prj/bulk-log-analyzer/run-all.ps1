@@ -34,7 +34,13 @@ param(
     [string]$CustomStart = "",
 
     [Parameter(Mandatory = $false)]
-    [string]$CustomEnd = ""
+    [string]$CustomEnd = "",
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ClearCache,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$ClearCashe
 )
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -42,6 +48,12 @@ $TempDir = "$env:USERPROFILE\AppData\Local\Temp\opencode"
 $CacheDir = "$TempDir\cache"
 $Now = Get-Date
 . (Join-Path $ScriptDir 'log-analyzer-core.ps1')
+
+if ($ClearCache -or $ClearCashe) {
+    $removedCount = Clear-LogCache -CacheDir $CacheDir
+    Write-Host "Cache cleared: $CacheDir ($removedCount items removed)" -ForegroundColor Green
+    exit 0
+}
 
 if (-not $TableName) {
     $TableName = Select-LogTableInteractive
@@ -139,6 +151,12 @@ function Test-Cache {
             return @{ Hit = $false; Reason = 'Cache metadata does not match table and time range' }
         }
 
+        if (-not (Test-LogCachePayloadValid -CacheCsv $CacheCsv -RecordCount $meta.RecordCount)) {
+            Remove-Item -Path $CacheCsv -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $CacheMeta -Force -ErrorAction SilentlyContinue
+            return @{ Hit = $false; Reason = 'Cache payload is empty or invalid' }
+        }
+
         $cacheTime = [DateTime]::Parse($meta.CacheTime)
         $age = (Get-Date) - $cacheTime
         $ttlHours = if ($meta.CacheTTL) { $meta.CacheTTL } else { $CacheTTL }
@@ -169,10 +187,16 @@ function Save-Cache {
         [datetime]$StartTime,
         [datetime]$EndTime
     )
+    $recordCount = Get-LogCsvRecordCount -CsvPath $SourceCsv
+    if ($recordCount -le 0) {
+        Remove-Item -Path $CacheCsv -Force -ErrorAction SilentlyContinue
+        Remove-Item -Path $CacheMeta -Force -ErrorAction SilentlyContinue
+        Write-Host "Cache skipped: query returned 0 records" -ForegroundColor Yellow
+        return
+    }
 
     Copy-Item -Path $SourceCsv -Destination $CacheCsv -Force
 
-    $recordCount = (Import-Csv -Path $SourceCsv -Encoding UTF8).Count
     $meta = @{
         TableName = $TableName
         CacheTime = (Get-Date).ToString("o")

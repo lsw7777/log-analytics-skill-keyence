@@ -323,6 +323,72 @@ function Test-LogCacheMetadataMatches {
     return $true
 }
 
+function Get-LogCsvRecordCount {
+    param([string]$CsvPath)
+
+    if (-not (Test-Path $CsvPath)) { return 0 }
+    if ((Get-Item -Path $CsvPath).Length -eq 0) { return 0 }
+
+    try {
+        return @(Import-Csv -Path $CsvPath -Encoding UTF8).Count
+    } catch {
+        return 0
+    }
+}
+
+function Test-LogCachePayloadValid {
+    param(
+        [string]$CacheCsv,
+        [object]$RecordCount
+    )
+
+    if (-not (Test-Path $CacheCsv)) { return $false }
+    if ((Get-Item -Path $CacheCsv).Length -eq 0) { return $false }
+    if ($null -eq $RecordCount) { return $false }
+    if ([int]$RecordCount -le 0) { return $false }
+    return $true
+}
+
+function Clear-LogCache {
+    param([string]$CacheDir)
+
+    if (-not (Test-Path $CacheDir)) {
+        New-Item -ItemType Directory -Path $CacheDir -Force | Out-Null
+        return 0
+    }
+
+    $items = @(Get-ChildItem -Path $CacheDir -Force -ErrorAction SilentlyContinue)
+    foreach ($item in $items) {
+        Remove-Item -Path $item.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    return $items.Count
+}
+
+function Get-LogQueryExecutionMode {
+    param(
+        [datetime]$QueryStartTime,
+        [datetime]$QueryEndTime,
+        [int]$Hours = 1
+    )
+
+    if ($QueryStartTime -and $QueryEndTime) {
+        return [PSCustomObject]@{
+            UseTimespan = $false
+            Timespan = $null
+            StartTime = $QueryStartTime
+            EndTime = $QueryEndTime
+        }
+    }
+
+    return [PSCustomObject]@{
+        UseTimespan = $true
+        Timespan = New-TimeSpan -Hours $Hours
+        StartTime = (Get-Date).AddHours(-$Hours)
+        EndTime = Get-Date
+    }
+}
+
 function Get-OperationGroupValue {
     param([object]$Row, [string]$TableName)
 

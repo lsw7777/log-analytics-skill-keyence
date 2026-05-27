@@ -174,12 +174,19 @@ function Invoke-LogQuery {
         Write-Host "Time range: Past $Hours hours"
     }
 
+    $queryMode = Get-LogQueryExecutionMode -QueryStartTime $QueryStartTime -QueryEndTime $QueryEndTime -Hours $Hours
+
     try {
-        $response = Invoke-AzOperationalInsightsQuery `
-            -WorkspaceId $WorkspaceId `
-            -Query $Query `
-            -Timespan (New-TimeSpan -Start $startTime -End $endTime) `
-            -ErrorAction Stop
+        $queryParams = @{
+            WorkspaceId = $WorkspaceId
+            Query = $Query
+            ErrorAction = 'Stop'
+        }
+        if ($queryMode.UseTimespan) {
+            $queryParams['Timespan'] = $queryMode.Timespan
+        }
+
+        $response = Invoke-AzOperationalInsightsQuery @queryParams
     }
     catch {
         Write-Host "`nQuery failed!" -ForegroundColor Red
