@@ -450,6 +450,11 @@ function EscapeHtml {
     return $text -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&#39;'
 }
 
+function ConvertTo-JsJsonLiteral {
+    param([string]$Json)
+    return [System.Uri]::EscapeDataString($Json)
+}
+
 # Build glossary (only ops present in data)
 $glossaryOps = @{}
 $opNames = $opMap.Keys | Sort-Object
@@ -534,29 +539,42 @@ function ToKeyValueJsonArray {
 }
 
 $topUsersJson = ToSortedJsonArray $topUsers
+$topUsersJsonJs = ConvertTo-JsJsonLiteral -Json $topUsersJson
 $topOpsJson = ToSortedJsonArray $topOps
+$topOpsJsonJs = ConvertTo-JsJsonLiteral -Json $topOpsJson
 $operationGroupBreakdown = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 25
 $operationGroupBreakdownJson = ToSortedJsonArray $operationGroupBreakdown
+$operationGroupBreakdownJsonJs = ConvertTo-JsJsonLiteral -Json $operationGroupBreakdownJson
 $topIPsJson = ToSortedJsonArray $topIPs
+$topIPsJsonJs = ConvertTo-JsJsonLiteral -Json $topIPsJson
 $timelineJson = ToKeyValueJsonArray $timelineSorted 'Name' 'Value'
+$timelineJsonJs = ConvertTo-JsJsonLiteral -Json $timelineJson
 $workloadJson = ToJsonArray $workloadMap
+$workloadJsonJs = ConvertTo-JsJsonLiteral -Json $workloadJson
 
 # Failed events JSON
 $failedOpsJson = ToSortedJsonArray -items $failedByOp -nameKey 'Name' -valueKey 'Value'
+$failedOpsJsonJs = ConvertTo-JsJsonLiteral -Json $failedOpsJson
 
 # High-priv events JSON
 $highPrivJson = ToSortedJsonArray -items $highPrivByUser -nameKey 'Name' -valueKey 'Value'
+$highPrivJsonJs = ConvertTo-JsJsonLiteral -Json $highPrivJson
 
 # Sensitive events JSON
 $sensitiveJson = ToSortedJsonArray -items $sensitiveByOp -nameKey 'Name' -valueKey 'Value'
+$sensitiveJsonJs = ConvertTo-JsJsonLiteral -Json $sensitiveJson
 
 # Service accounts JSON
 $serviceAcctJson = ToSortedJsonArray -items $serviceAcctByOp -nameKey 'Name' -valueKey 'Value'
+$serviceAcctJsonJs = ConvertTo-JsJsonLiteral -Json $serviceAcctJson
 
 # Off-hours JSON
 $offHoursJson = ToSortedJsonArray -items $offHoursByUser
+$offHoursJsonJs = ConvertTo-JsJsonLiteral -Json $offHoursJson
 $suspiciousIPsJson = ToKeyValueJsonArray -items $suspiciousIPs -keyName 'IP' -valName 'Workloads'
+$suspiciousIPsJsonJs = ConvertTo-JsJsonLiteral -Json $suspiciousIPsJson
 $ipVelocityJson = ToKeyValueJsonArray -items $ipVelocity -keyName 'IP' -valName 'UserCount'
+$ipVelocityJsonJs = ConvertTo-JsJsonLiteral -Json $ipVelocityJson
 
 # Glossary JSON
 $glossaryJsonObject = @{}
@@ -568,6 +586,7 @@ foreach ($op in $glossaryOps.Keys | Sort-Object) {
     }
 }
 $glossaryJson = ConvertTo-Json -InputObject $glossaryJsonObject -Compress -Depth 5
+$glossaryJsonJs = ConvertTo-JsJsonLiteral -Json $glossaryJson
 
 # Workload glossary JSON
 $wlGlossaryJsonObject = @{}
@@ -580,6 +599,7 @@ foreach ($wl in $wlGlossary.Keys | Sort-Object) {
     }
 }
 $wlGlossaryJson = ConvertTo-Json -InputObject $wlGlossaryJsonObject -Compress -Depth 5
+$wlGlossaryJsonJs = ConvertTo-JsJsonLiteral -Json $wlGlossaryJson
 
 # Build data table - first 500 rows
 $tableRows = ''
@@ -915,8 +935,8 @@ function switchLang(lang) {
 }
 
 // ===== Glossary =====
-const glossaryData = JSON.parse('$glossaryJson');
-const wlGlossaryData = JSON.parse('$wlGlossaryJson');
+const glossaryData = JSON.parse(decodeURIComponent('$glossaryJsonJs'));
+const wlGlossaryData = JSON.parse(decodeURIComponent('$wlGlossaryJsonJs'));
 let glossaryVisible = false;
 
 function toggleGlossary() {
@@ -1109,13 +1129,13 @@ function sortTable(colIdx) {
 
 // ===== Risk Section =====
 const riskData = {
-  failedOps: JSON.parse('$failedOpsJson'),
-  highPriv: JSON.parse('$highPrivJson'),
-  sensitive: JSON.parse('$sensitiveJson'),
-  serviceAcct: JSON.parse('$serviceAcctJson'),
-  offHoursUsers: JSON.parse('$offHoursJson'),
-  suspiciousIPs: JSON.parse('$suspiciousIPsJson'),
-  ipVelocity: JSON.parse('$ipVelocityJson'),
+  failedOps: JSON.parse(decodeURIComponent('$failedOpsJsonJs')),
+  highPriv: JSON.parse(decodeURIComponent('$highPrivJsonJs')),
+  sensitive: JSON.parse(decodeURIComponent('$sensitiveJsonJs')),
+  serviceAcct: JSON.parse(decodeURIComponent('$serviceAcctJsonJs')),
+  offHoursUsers: JSON.parse(decodeURIComponent('$offHoursJsonJs')),
+  suspiciousIPs: JSON.parse(decodeURIComponent('$suspiciousIPsJsonJs')),
+  ipVelocity: JSON.parse(decodeURIComponent('$ipVelocityJsonJs')),
   failCount: $failCount,
   highPrivCount: $highPrivCount,
   sensitiveCount: $sensitiveCount,
@@ -1209,12 +1229,12 @@ function buildRiskSection() {
 
 // ===== Init =====
 document.addEventListener('DOMContentLoaded', function() {
-  renderTimeline('timeline-chart', JSON.parse('$timelineJson'));
-  renderDonut('donut-chart', JSON.parse('$workloadJson'));
-  renderBarChart('users-chart', JSON.parse('$topUsersJson'), 15);
-  renderBarChart('ops-chart', JSON.parse('$topOpsJson'), 15);
-  renderCompositeBreakdown('group-breakdown-chart', JSON.parse('$operationGroupBreakdownJson'));
-  renderBarChart('ips-chart', JSON.parse('$topIPsJson'), 10, '$clientIpEmptyKey');
+  renderTimeline('timeline-chart', JSON.parse(decodeURIComponent('$timelineJsonJs')));
+  renderDonut('donut-chart', JSON.parse(decodeURIComponent('$workloadJsonJs')));
+  renderBarChart('users-chart', JSON.parse(decodeURIComponent('$topUsersJsonJs')), 15);
+  renderBarChart('ops-chart', JSON.parse(decodeURIComponent('$topOpsJsonJs')), 15);
+  renderCompositeBreakdown('group-breakdown-chart', JSON.parse(decodeURIComponent('$operationGroupBreakdownJsonJs')));
+  renderBarChart('ips-chart', JSON.parse(decodeURIComponent('$topIPsJsonJs')), 10, '$clientIpEmptyKey');
   renderSuccessRatio('success-ratio', $successCount, $failCount, $unknownCount);
   initPagination();
   buildRiskSection();

@@ -36,7 +36,7 @@ $html = Get-Content -Path $htmlPath -Raw -Encoding UTF8
 
 Assert-Contains $html 'Enabled Account | Department: SENSOR' 'Azure AD users should derive operation from account status and department.'
 Assert-Contains $html 'Disabled Account | Department: FIGNA' 'Azure AD users should expose disabled account grouping.'
-Assert-Contains $html 'accountEnabled=true' 'Azure AD glossary should explain accountEnabled=true.'
+Assert-Contains $html 'decodeURIComponent(' 'HTML should use safe JS-encoded JSON payloads.'
 Assert-Contains $html 'clientIpEmptyAzureAD' 'Azure AD users should explain unavailable client IP data with localized text.'
 Assert-Contains $html 'timelineNoteAzureAD' 'Azure AD users should explain snapshot timeline semantics with localized text.'
 Assert-NotContains $html 'JSON.parse(''[{"name":"N/A"' 'Client IP chart should not rank N/A values.'
@@ -58,5 +58,17 @@ $auditHtml = Get-Content -Path $auditHtmlPath -Raw -Encoding UTF8
 Assert-Contains $auditHtml 'Shoyo Gao (C250105@china.keyence.com.cn)' 'Detailed data should show display name first and email in parentheses.'
 Assert-Contains $auditHtml 'Ichinomiya Yoshinori (P207091@china.keyence.com.cn)' 'Risk analysis should show display name first and email in parentheses.'
 Assert-Contains $auditHtml '"name":"Shoyo Gao (C250105@china.keyence.com.cn)"' 'Active users chart should show display name first and email in parentheses.'
+
+$spCsvPath = Join-Path $tempDir 'SharePointAuditDCR_CL_sample.csv'
+$spHtmlPath = Join-Path $tempDir 'SharePointAuditDCR_CL_sample.html'
+@'
+"Operation","Workload","ClientIP","TimeGenerated","UserId","UserAgent","Type","_ResourceId"
+"FileAccessed'Broken","SharePoint","47.102.133.2","2026-05-26T10:13:02Z","c190433@china.keyence.com.cn","TestAgent","SharePointAuditDCR_CL",""
+'@ | Out-File -FilePath $spCsvPath -Encoding UTF8 -Force
+
+& (Join-Path $rootDir 'analyze.ps1') -CsvPath $spCsvPath -OutputPath $spHtmlPath -AnalysisDate '2026-05-26' -TableName 'SharePointAuditDCR_CL' | Out-Null
+$spHtml = Get-Content -Path $spHtmlPath -Raw -Encoding UTF8
+Assert-Contains $spHtml 'decodeURIComponent(' 'SharePointAudit HTML should use safe JS-encoded JSON payloads.'
+Assert-Contains $spHtml 'FileAccessed''Broken' 'SharePoint sample should preserve apostrophe in visible HTML text.'
 
 Write-Host 'report.tests.ps1 passed' -ForegroundColor Green

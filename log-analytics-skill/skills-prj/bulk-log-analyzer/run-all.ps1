@@ -40,7 +40,10 @@ param(
     [switch]$ClearCache,
 
     [Parameter(Mandatory = $false)]
-    [switch]$ClearCashe
+    [switch]$ClearCashe,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoOpen
 )
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -324,7 +327,9 @@ Write-Host "[4/4] Opening browser..." -ForegroundColor Yellow
 $htmlUrl = "file:///$($HtmlFilePath -replace '\\', '/')"
 Write-Host "HTML URL: $htmlUrl" -ForegroundColor Cyan
 
-Start-Process $HtmlFilePath
+if (-not $NoOpen) {
+    Start-Process $HtmlFilePath
+}
 
 Write-Host ""
 Write-Host "============================================" -ForegroundColor Magenta

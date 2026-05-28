@@ -389,6 +389,72 @@ function Get-LogQueryExecutionMode {
     }
 }
 
+function New-LogAnalyzerScheduleConfig {
+    param(
+        [string]$RunAt = '01:00',
+        [string[]]$Tables = @()
+    )
+
+    if (-not $Tables -or $Tables.Count -eq 0) {
+        $Tables = @($SupportedLogTables | ForEach-Object { $_.Name })
+    }
+
+    foreach ($table in $Tables) {
+        Resolve-LogTableSelection -Selection $table | Out-Null
+    }
+
+    if ($RunAt -notmatch '^([01]\d|2[0-3]):[0-5]\d$') {
+        throw "RunAt must use HH:mm format, got: $RunAt"
+    }
+
+    return [PSCustomObject]@{
+        RunAt = $RunAt
+        Tables = [string[]]$Tables
+    }
+}
+
+function Get-LogAnalyzerScheduleConfigPath {
+    param([string]$RootDir)
+    return Join-Path $RootDir 'schedule-config.json'
+}
+
+function Get-LogAnalyzerStatusPath {
+    param([string]$RootDir)
+    return Join-Path $RootDir 'schedule-status.json'
+}
+
+function Get-LogAnalyzerBatchCommand {
+    param(
+        [string]$RootDir,
+        [string]$ConfigPath
+    )
+
+    $scriptPath = Join-Path $RootDir 'scheduled-run.ps1'
+    return "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
+}
+
+function Get-LogAnalyzerTrayCommand {
+    param(
+        [string]$RootDir,
+        [string]$ConfigPath
+    )
+
+    $scriptPath = Join-Path $RootDir 'tray.ps1'
+    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
+}
+
+function Get-LogAnalyzerNextRunTime {
+    param(
+        [string]$RunAt = '01:00',
+        [datetime]$Now = (Get-Date)
+    )
+
+    $parts = $RunAt.Split(':')
+    $next = $Now.Date.AddHours([int]$parts[0]).AddMinutes([int]$parts[1])
+    if ($next -le $Now) { $next = $next.AddDays(1) }
+    return $next
+}
+
 function Get-OperationGroupValue {
     param([object]$Row, [string]$TableName)
 
