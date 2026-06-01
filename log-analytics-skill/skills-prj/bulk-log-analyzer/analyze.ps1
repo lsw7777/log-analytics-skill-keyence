@@ -46,6 +46,17 @@ if ($TableName -eq 'AzureADUsersDCR_CL') {
     $timelineNoteJa = 'AzureADUsersDCR_CL はユーザーディレクトリのスナップショットテーブルです。TimeGenerated は Log Analytics への取り込み時刻であり、実際のユーザー操作時刻ではありません。'
     $clientIpEmptyKey = 'clientIpEmptyAzureAD'
 }
+elseif ($TableName -eq 'AssignedLicensesDCR_CL') {
+    $timelineTitleZh = '许可证快照时间'
+    $timelineTitleJa = 'ライセンススナップショット時刻'
+    $timelineNoteKey = 'timelineNoteAssignedLicenses'
+    $timelineNoteZh = 'AssignedLicensesDCR_CL 是许可证分配快照表；TimeGenerated 是本批许可证状态写入 Log Analytics 的时间，不是用户真实活动时间。'
+    $timelineNoteJa = 'AssignedLicensesDCR_CL はライセンス割り当てのスナップショットテーブルです。TimeGenerated はライセンス状態が Log Analytics に取り込まれた時刻であり、実際のユーザー操作時刻ではありません。'
+    $clientIpEmptyKey = 'clientIpEmptyAssignedLicenses'
+    $statusNoteKey = 'statusNoteAssignedLicenses'
+    $statusNoteZh = 'AssignedLicensesDCR_CL 使用 ProvisioningStatus 判断状态：Success 计为成功，其他非空状态计为失败/需关注，空值计为未知。'
+    $statusNoteJa = 'AssignedLicensesDCR_CL は ProvisioningStatus で状態を判定します。Success は成功、その他の空でない状態は失敗または確認対象、空値は不明として扱います。'
+}
 elseif ($TableName -eq 'MailboxStatisticsDCR_CL') {
     $timelineTitleZh = '邮箱统计快照时间'
     $timelineTitleJa = 'メールボックス統計スナップショット時刻'
@@ -82,14 +93,14 @@ function Get-FieldValue {
 function Get-UserValue {
     param([object]$Row)
 
-    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $profile = $analysisProfile
     return Get-FieldValue -Row $Row -Names $profile.UserFields -Default $profile.DefaultUser
 }
 
 function Get-OperationValue {
     param([object]$Row)
 
-    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $profile = $analysisProfile
     if ($TableName -eq 'AzureADUsersDCR_CL') {
         $enabledRaw = (Get-FieldValue -Row $Row -Names @('accountEnabled', 'AccountEnabled') -Default '').ToLowerInvariant()
         $status = if ($enabledRaw -eq 'false') { 'Disabled Account' } elseif ($enabledRaw -eq 'true') { 'Enabled Account' } else { 'Account Status Unknown' }
@@ -100,6 +111,13 @@ function Get-OperationValue {
         $jobTitle = Get-FieldValue -Row $Row -Names @('jobTitle', 'JobTitle') -Default ''
         if ($jobTitle) { return "$status | JobTitle: $jobTitle" }
         return "$status | Department: Unassigned"
+    }
+    if ($TableName -eq 'AssignedLicensesDCR_CL') {
+        $status = Get-FieldValue -Row $Row -Names @('ProvisioningStatus') -Default ''
+        $servicePlan = Get-FieldValue -Row $Row -Names @('ServicePlanName', 'SkuPartNumber', 'LicenseName') -Default ''
+        if ($status -and $servicePlan) { return "$status | $servicePlan" }
+        if ($status) { return $status }
+        if ($servicePlan) { return $servicePlan }
     }
     if (-not $profile.UseCompositeOperationGroup) {
         return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
@@ -121,22 +139,27 @@ function Get-OperationValue {
 function Get-WorkloadValue {
     param([object]$Row)
 
-    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $profile = $analysisProfile
     return Get-FieldValue -Row $Row -Names $profile.WorkloadFields -Default $profile.DefaultWorkload
 }
 
 function Get-ClientIpValue {
     param([object]$Row)
 
-    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $profile = $analysisProfile
     return Get-FieldValue -Row $Row -Names $profile.ClientIpFields -Default $profile.DefaultClientIp
 }
 
 function Get-SuccessValue {
     param([object]$Row)
 
-    $profile = Get-TableAnalysisProfile -TableName $TableName
+    $profile = $analysisProfile
     $value = (Get-FieldValue -Row $Row -Names $profile.SuccessFields -Default $profile.DefaultSuccess).ToLowerInvariant()
+    if ($TableName -eq 'AssignedLicensesDCR_CL') {
+        if ([string]::IsNullOrWhiteSpace($value) -or $value -eq 'unknown') { return 'unknown' }
+        if ($value -eq 'success') { return 'true' }
+        return 'false'
+    }
     if ($value -match '^(true|success|succeeded|delivered|expanded|completed|complete|ok|pass|passed|0)$') { return 'true' }
     if ($value -match '^(false|fail|failed|failure|undelivered|blocked|rejected|denied|error|timeout|quarantined|1)$') { return 'false' }
     if ($profile.DefaultSuccess -eq 'true') { return 'true' }
@@ -255,11 +278,12 @@ function Format-UserDisplayValue {
 $script:userDisplayNameMap = Get-UserDisplayNameMap -CurrentData $data -CsvPath $csvPath -TableName $TableName
 
 # Unique users
-$allUsers = @()
+$allUsersList = [System.Collections.Generic.List[string]]::new()
 foreach ($row in $data) {
     $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
-    $allUsers += $u
+    $allUsersList.Add($u) | Out-Null
 }
+$allUsers = $allUsersList.ToArray()
 $uniqueUsers = ($allUsers | Select-Object -Unique).Count
 
 # Unique operations
@@ -290,10 +314,12 @@ $topOps = $opMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object
 
 # Top ClientIPs
 $ipMap = @{}
-foreach ($row in $data) {
-    $ip = Get-ClientIpValue -Row $row
-    if (-not (Test-UsableIpValue -IP $ip)) { continue }
-    $ipMap[$ip] = ($ipMap[$ip] + 1)
+if ($TableName -ne 'AssignedLicensesDCR_CL') {
+    foreach ($row in $data) {
+        $ip = Get-ClientIpValue -Row $row
+        if (-not (Test-UsableIpValue -IP $ip)) { continue }
+        $ipMap[$ip] = ($ipMap[$ip] + 1)
+    }
 }
 $topIPs = $ipMap.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 10
 
@@ -328,32 +354,38 @@ foreach ($row in $data) {
 $timelineSorted = $hourMap.GetEnumerator() | Sort-Object Name
 
 # Off-hours activity (00:00-07:00)
-$offHoursEvents = @()
-foreach ($row in $data) {
-    $tg = $row.TimeGenerated
-    if ($tg -and $tg -ne '') {
-        try {
-            $dt = [DateTime]::Parse($tg)
-            $localDt = $dt.ToLocalTime()
-            if ($localDt.Hour -ge 0 -and $localDt.Hour -lt 7) {
-                $offHoursEvents += $row
-            }
-        } catch {}
+$offHoursEventsList = [System.Collections.Generic.List[object]]::new()
+if ($TableName -ne 'AssignedLicensesDCR_CL') {
+    foreach ($row in $data) {
+        $tg = $row.TimeGenerated
+        if ($tg -and $tg -ne '') {
+            try {
+                $dt = [DateTime]::Parse($tg)
+                $localDt = $dt.ToLocalTime()
+                if ($localDt.Hour -ge 22 -and $localDt.Hour -lt 8) {
+                    $offHoursEventsList.Add($row) | Out-Null
+                }
+            } catch {}
+        }
     }
 }
+$offHoursEvents = $offHoursEventsList.ToArray()
 
 # Failed operations details
-$failedEvents = @($data | Where-Object { (Get-SuccessValue -Row $_) -eq 'false' })
 $failedByOp = @{}
-foreach ($row in $failedEvents) {
-    $op = Get-OperationValue -Row $row
-    $failedByOp[$op] = ($failedByOp[$op] + 1)
+$failedEventCount = 0
+foreach ($row in $data) {
+    if ((Get-SuccessValue -Row $row) -eq 'false') {
+        $failedEventCount++
+        $op = Get-OperationValue -Row $row
+        $failedByOp[$op] = ($failedByOp[$op] + 1)
+    }
 }
 $failedByOp = $failedByOp.GetEnumerator() | Sort-Object Value -Descending
 
 # High-privilege operations
 $highPrivOps = @('ExportReport', 'Search', 'EditDataset', 'Delete', 'DeleteDataset', 'DeleteReport', 'DeleteWorkspace', 'AdminAction')
-$highPrivEvents = @($data | Where-Object { Test-OperationContains -Row $_ -Operations $highPrivOps })
+$highPrivEvents = if ($TableName -eq 'AssignedLicensesDCR_CL') { @() } else { @($data | Where-Object { Test-OperationContains -Row $_ -Operations $highPrivOps }) }
 $highPrivByUser = @{}
 foreach ($row in $highPrivEvents) {
     $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
@@ -364,7 +396,7 @@ $highPrivByUser = $highPrivByUser.GetEnumerator() | Sort-Object Value -Descendin
 
 # Sensitive data events
 $sensitiveOps = @('SensitivityLabeledFileOpened', 'SensitivityLabeledFileRenamed', 'IrmContent', 'AppliedSensitivityLabel', 'ChangedSensitivityLabel')
-$sensitiveEvents = @($data | Where-Object { Test-OperationContains -Row $_ -Operations $sensitiveOps })
+$sensitiveEvents = if ($TableName -eq 'AssignedLicensesDCR_CL') { @() } else { @($data | Where-Object { Test-OperationContains -Row $_ -Operations $sensitiveOps }) }
 $sensitiveByOp = @{}
 foreach ($row in $sensitiveEvents) {
     $op = Get-OperationValue -Row $row
@@ -373,7 +405,7 @@ foreach ($row in $sensitiveEvents) {
 $sensitiveByOp = $sensitiveByOp.GetEnumerator() | Sort-Object Value -Descending
 
 # Service account activity (GUIDs starting with 0000-...)
-$serviceAcctEvents = @($data | Where-Object { (Get-UserValue -Row $_) -match '^00000009-' })
+$serviceAcctEvents = if ($TableName -eq 'AssignedLicensesDCR_CL') { @() } else { @($data | Where-Object { (Get-UserValue -Row $_) -match '^00000009-' }) }
 $serviceAcctByOp = @{}
 foreach ($row in $serviceAcctEvents) {
     $op = Get-OperationValue -Row $row
@@ -383,12 +415,14 @@ $serviceAcctByOp = $serviceAcctByOp.GetEnumerator() | Sort-Object Value -Descend
 
 # IP velocity - single IP with multiple users
 $ipUsers = @{}
-foreach ($row in $data) {
-    $ip = Get-ClientIpValue -Row $row
-    if (-not (Test-UsableIpValue -IP $ip)) { continue }
-    $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
-    if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
-    $ipUsers[$ip][$u] = 1
+if ($TableName -ne 'AssignedLicensesDCR_CL') {
+    foreach ($row in $data) {
+        $ip = Get-ClientIpValue -Row $row
+        if (-not (Test-UsableIpValue -IP $ip)) { continue }
+        $u = Format-UserDisplayValue -User (Get-UserValue -Row $row)
+        if (-not $ipUsers.ContainsKey($ip)) { $ipUsers[$ip] = @{} }
+        $ipUsers[$ip][$u] = 1
+    }
 }
 $ipVelocity = @()
 foreach ($ip in $ipUsers.Keys) {
@@ -405,14 +439,16 @@ $ipVelocity = $ipVelocity | Sort-Object UserCount -Descending
 
 # Suspicious IPs (non-RFC1918 accessing multiple workloads)
 $ipWorkloads = @{}
-foreach ($row in $data) {
-    $ip = Get-ClientIpValue -Row $row
-    if (-not (Test-UsableIpValue -IP $ip)) { continue }
-    # Skip RFC1918
-    if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)') { continue }
-    $wl = Get-WorkloadValue -Row $row
-    if (-not $ipWorkloads.ContainsKey($ip)) { $ipWorkloads[$ip] = @{} }
-    $ipWorkloads[$ip][$wl] = 1
+if ($TableName -ne 'AssignedLicensesDCR_CL') {
+    foreach ($row in $data) {
+        $ip = Get-ClientIpValue -Row $row
+        if (-not (Test-UsableIpValue -IP $ip)) { continue }
+        # Skip RFC1918
+        if ($ip -match '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)') { continue }
+        $wl = Get-WorkloadValue -Row $row
+        if (-not $ipWorkloads.ContainsKey($ip)) { $ipWorkloads[$ip] = @{} }
+        $ipWorkloads[$ip][$wl] = 1
+    }
 }
 $suspiciousIPs = @()
 foreach ($ip in $ipWorkloads.Keys) {
@@ -601,9 +637,9 @@ foreach ($wl in $wlGlossary.Keys | Sort-Object) {
 $wlGlossaryJson = ConvertTo-Json -InputObject $wlGlossaryJsonObject -Compress -Depth 5
 $wlGlossaryJsonJs = ConvertTo-JsJsonLiteral -Json $wlGlossaryJson
 
-# Build data table - first 500 rows
+# Build data table - first 1000 rows
 $tableRows = ''
-$previewRows = [Math]::Min(500, $data.Count)
+$previewRows = [Math]::Min(1000, $data.Count)
 for ($i = 0; $i -lt $previewRows; $i++) {
     $row = $data[$i]
     $tg = if ($row.TimeGenerated) { $row.TimeGenerated } else { '' }
@@ -838,7 +874,7 @@ tr:hover td { background: var(--bg-tertiary); }
 
 <div class="section">
   <h2 data-i18n="detailedTable">详细数据</h2>
-  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;" data-i18n="tablePreview">预览前 500 行</p>
+  <p style="color:var(--text-secondary);font-size:13px;margin-bottom:12px;" data-i18n="tablePreview">预览前 1000 行</p>
   <div class="table-wrapper">
     <div class="table-scroll">
       <table id="data-table">
@@ -877,7 +913,7 @@ const i18n = {
     "successRatio":"成功/失败比率","riskAnalysis":"风险分析","detailedTable":"详细数据",
     "showGlossary":"显示术语表","hideGlossary":"隐藏术语表","metric":"指标","value":"值",
     "severity":"严重程度","unknown":"未知","previous":"上一页","next":"下一页",
-    "subtitle":"Log Analytics 日志分析报告","tablePreview":"预览前 500 行",
+    "subtitle":"Log Analytics 日志分析报告","tablePreview":"预览前 1000 行",
     "time":"时间","operation":"操作","user":"用户","workload":"工作负载","clientIP":"IP",
     "status":"状态","riskIndicators":"$riskCount 个风险指标已检出",
     "failedOps":"失败操作","suspiciousIPs":"可疑 IP","offHours":"非工作时间活动",
@@ -885,11 +921,14 @@ const i18n = {
     "serviceAccounts":"服务账户活动","low":"低风险","medium":"中风险","high":"高风险",
     "offHoursUsers":"非工作时活跃用户","failedOpSummary":"失败操作汇总","count":"次数",
     "timelineNoteAzureAD":"AzureADUsersDCR_CL 是用户目录快照表；TimeGenerated 是本批数据写入 Log Analytics 的时间，不是用户真实活动时间。",
+    "timelineNoteAssignedLicenses":"AssignedLicensesDCR_CL 是许可证分配快照表；TimeGenerated 是本批许可证状态写入 Log Analytics 的时间，不是用户真实活动时间。",
     "timelineNoteMailbox":"MailboxStatisticsDCR_CL 是邮箱容量快照表；TimeGenerated 是本批统计数据写入 Log Analytics 的时间，不是邮箱用户活动时间。",
     "clientIpNoDataGeneric":"无可用客户端 IP 数据。",
     "clientIpEmptyAzureAD":"此表不包含客户端 IP 字段；它是用户目录快照数据，不记录登录或访问来源 IP。",
+    "clientIpEmptyAssignedLicenses":"此表不包含客户端 IP 字段；它是许可证分配快照数据，不记录登录或访问来源 IP。",
     "clientIpEmptyMailbox":"此表不包含客户端 IP 字段；它是邮箱容量统计快照，不记录客户端访问来源 IP。",
     "statusUnknownNote":"未知表示源日志没有提供 IsSuccess、ResultStatus、Status 或 Result 等可判断成功/失败的字段，或该事件类型本身没有成功/失败语义。",
+    "statusNoteAssignedLicenses":"AssignedLicensesDCR_CL 使用 ProvisioningStatus 判断状态：Success 计为成功，其他非空状态计为失败/需关注，空值计为未知。",
     "statusNoteWQC":"WQCLogDCR_CL 不提供单条记录的失败状态；成功/失败比率按已采集规则记录展示，真实日志类型来自 OperationType。"
   },
   ja: {
@@ -899,7 +938,7 @@ const i18n = {
     "successRatio":"成功/失敗比率","riskAnalysis":"リスク分析","detailedTable":"詳細データ",
     "showGlossary":"用語集を表示","hideGlossary":"用語集を非表示","metric":"指標","value":"値",
     "severity":"重要度","unknown":"不明","previous":"前へ","next":"次へ",
-    "subtitle":"Log Analytics ログ分析レポート","tablePreview":"最初の 500 行をプレビュー",
+    "subtitle":"Log Analytics ログ分析レポート","tablePreview":"最初の 1000 行をプレビュー",
     "time":"時間","operation":"操作","user":"ユーザー","workload":"ワークロード","clientIP":"IP",
     "status":"ステータス","riskIndicators":"$riskCount 件のリスク指標が検出されました",
     "failedOps":"失敗した操作","suspiciousIPs":"不審な IP","offHours":"時間外のアクティビティ",
@@ -907,11 +946,14 @@ const i18n = {
     "serviceAccounts":"サービスアカウント","low":"低リスク","medium":"中リスク","high":"高リスク",
     "offHoursUsers":"時間外アクティブユーザー","failedOpSummary":"失敗操作まとめ","count":"回数",
     "timelineNoteAzureAD":"AzureADUsersDCR_CL はユーザーディレクトリのスナップショットテーブルです。TimeGenerated は Log Analytics への取り込み時刻であり、実際のユーザー操作時刻ではありません。",
+    "timelineNoteAssignedLicenses":"AssignedLicensesDCR_CL はライセンス割り当てのスナップショットテーブルです。TimeGenerated はライセンス状態が Log Analytics に取り込まれた時刻であり、実際のユーザー操作時刻ではありません。",
     "timelineNoteMailbox":"MailboxStatisticsDCR_CL はメールボックス容量統計のスナップショットテーブルです。TimeGenerated は統計データが Log Analytics に取り込まれた時刻であり、メールボックス利用者の操作時刻ではありません。",
     "clientIpNoDataGeneric":"利用可能なクライアント IP データはありません。",
     "clientIpEmptyAzureAD":"このテーブルにはクライアント IP フィールドがありません。ユーザーディレクトリのスナップショットであり、ログインやアクセス元 IP は記録されません。",
+    "clientIpEmptyAssignedLicenses":"このテーブルにはクライアント IP フィールドがありません。ライセンス割り当てのスナップショットであり、ログインやアクセス元 IP は記録されません。",
     "clientIpEmptyMailbox":"このテーブルにはクライアント IP フィールドがありません。メールボックス容量統計のスナップショットであり、クライアントアクセス元 IP は記録されません。",
     "statusUnknownNote":"不明は、元ログに IsSuccess、ResultStatus、Status、Result など成功/失敗を判断できるフィールドがない、またはそのイベント種別自体に成功/失敗の意味がないことを示します。",
+    "statusNoteAssignedLicenses":"AssignedLicensesDCR_CL は ProvisioningStatus で状態を判定します。Success は成功、その他の空でない状態は失敗または確認対象、空値は不明として扱います。",
     "statusNoteWQC":"WQCLogDCR_CL は各レコードの失敗状態を提供しません。成功/失敗比率は収集済みルールレコードとして表示し、実際のログ種別は OperationType から取得します。"
   }
 };

@@ -176,11 +176,12 @@ function Get-TableAnalysisProfile {
     switch ($TableName) {
         'AssignedLicensesDCR_CL' {
             $common.UserFields = @('UserPrincipalName', 'UserUPN', 'UPN', 'Mail', 'EmailAddress', 'DisplayName', 'UserId', 'ObjectId', 'Id') + $common.UserFields
-            $common.OperationFields = @('SkuPartNumber', 'LicenseName', 'AssignedLicenses', 'Licenses', 'AccountEnabled', 'UserType') + $common.OperationFields
+            $common.OperationFields = @('ProvisioningStatus', 'ServicePlanName', 'SkuPartNumber', 'LicenseName', 'AssignedLicenses', 'Licenses', 'AccountEnabled', 'UserType') + $common.OperationFields
             $common.WorkloadFields = @('Workload', 'ServicePlanName', 'SkuPartNumber', 'SourceSystem') + $common.WorkloadFields
             $common.DefaultOperation = 'Assigned License Record'
             $common.DefaultWorkload = 'Microsoft Entra ID Licensing'
-            $common.DefaultSuccess = 'true'
+            $common.SuccessFields = @('ProvisioningStatus') + $common.SuccessFields
+            $common.DefaultSuccess = 'unknown'
         }
         'AuditGeneralDCR_CL' {
             $common.UserFields = @('UserUPN', 'UserId', 'Actor', 'ActorId', 'ActorUserPrincipalName') + $common.UserFields
@@ -276,6 +277,13 @@ function Get-OperationValue {
         if ($jobTitle) { return "$status | JobTitle: $jobTitle" }
         return "$status | Department: Unassigned"
     }
+    if ($TableName -eq 'AssignedLicensesDCR_CL') {
+        $status = Get-FieldValue -Row $Row -Names @('ProvisioningStatus') -Default ''
+        $servicePlan = Get-FieldValue -Row $Row -Names @('ServicePlanName', 'SkuPartNumber', 'LicenseName') -Default ''
+        if ($status -and $servicePlan) { return "$status | $servicePlan" }
+        if ($status) { return $status }
+        if ($servicePlan) { return $servicePlan }
+    }
     return Get-FieldValue -Row $Row -Names $profile.OperationFields -Default $profile.DefaultOperation
 }
 
@@ -296,6 +304,11 @@ function Get-SuccessValue {
 
     $profile = Get-TableAnalysisProfile -TableName $TableName
     $value = (Get-FieldValue -Row $Row -Names $profile.SuccessFields -Default $profile.DefaultSuccess).ToLowerInvariant()
+    if ($TableName -eq 'AssignedLicensesDCR_CL') {
+        if ([string]::IsNullOrWhiteSpace($value) -or $value -eq 'unknown') { return 'unknown' }
+        if ($value -eq 'success') { return 'true' }
+        return 'false'
+    }
     if ($value -match '^(true|success|succeeded|delivered|expanded|completed|complete|ok|pass|passed|0)$') { return 'true' }
     if ($value -match '^(false|fail|failed|failure|undelivered|blocked|rejected|denied|error|timeout|quarantined|1)$') { return 'false' }
     if ($profile.DefaultSuccess -eq 'true') { return 'true' }
