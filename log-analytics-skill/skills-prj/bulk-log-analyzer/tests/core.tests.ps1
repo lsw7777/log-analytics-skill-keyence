@@ -17,15 +17,28 @@ function Assert-Equal {
 }
 
 $tables = Get-SupportedLogTables
-Assert-Equal $tables.Count 7 'Supported table count mismatch.'
-Assert-Equal $tables[0].Name 'AssignedLicensesDCR_CL' 'First menu table mismatch.'
-Assert-Equal $tables[1].Name 'AuditGeneralDCR_CL' 'Second menu table mismatch.'
-Assert-Equal (Resolve-LogTableSelection -Selection '2') 'AuditGeneralDCR_CL' 'Menu selection did not resolve expected table.'
+Assert-Equal $tables.Count 11 'Supported table count mismatch.'
+Assert-Equal $tables[0].Name 'AADManagedIdentitySignInLogs' 'First menu table mismatch.'
+Assert-Equal $tables[1].Name 'AADServicePrincipalSignInLogs' 'Second menu table mismatch.'
+Assert-Equal (Resolve-LogTableSelection -Selection '4') 'AuditGeneralDCR_CL' 'Menu selection did not resolve expected table.'
 
 $range = Get-DefaultLogTimeRange -Now ([datetime]'2026-05-25T13:45:00')
-Assert-Equal $range.StartTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-24 00:00:00' 'Default start time mismatch.'
-Assert-Equal $range.EndTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-25 00:00:00' 'Default end time mismatch.'
-Assert-Equal $range.AnalysisDateStr '20260524' 'Analysis date mismatch.'
+Assert-Equal $range.StartTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-25 10:45:00' 'Default start time mismatch.'
+Assert-Equal $range.EndTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-25 13:45:00' 'Default end time mismatch.'
+Assert-Equal $range.AnalysisDateStr '202605251045_202605251345' 'Analysis date mismatch.'
+Assert-Equal $range.AnalysisDateDisplay '2026-05-25 10:45:00 to 2026-05-25 13:45:00' 'Analysis date display mismatch.'
+
+$oneDayRelativeRange = Get-RelativeLogTimeRange -Now ([datetime]'2026-05-25T13:45:00') -Days 1
+Assert-Equal $oneDayRelativeRange.StartTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-24 13:45:00' 'One-day relative start mismatch.'
+Assert-Equal $oneDayRelativeRange.EndTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-25 13:45:00' 'One-day relative end mismatch.'
+
+$tooManyRelativeDaysFailed = $false
+try {
+    Get-RelativeLogTimeRange -Now ([datetime]'2026-05-25T13:45:00') -Days 32 | Out-Null
+} catch {
+    $tooManyRelativeDaysFailed = $true
+}
+Assert-Equal $tooManyRelativeDaysFailed $true 'Relative day selection should reject more than 31 days.'
 
 $singleDayRange = Get-LogTimeRangeFromDates -StartDate '2026-05-24' -EndDate '2026-05-24'
 Assert-Equal $singleDayRange.StartTime.ToString('yyyy-MM-dd HH:mm:ss') '2026-05-24 00:00:00' 'Single-day start mismatch.'
@@ -47,6 +60,14 @@ try {
 }
 Assert-Equal $invalidRangeFailed $true 'Invalid date range should fail.'
 
+$tooLongRangeFailed = $false
+try {
+    Get-LogTimeRangeFromDates -StartDate '2026-04-01' -EndDate '2026-05-10' | Out-Null
+} catch {
+    $tooLongRangeFailed = $true
+}
+Assert-Equal $tooLongRangeFailed $true 'Date range longer than 31 days should fail.'
+
 $paths = Get-LogArtifactPaths -TempDir 'C:\Temp' -TableName 'AuditGeneralDCR_CL' -AnalysisDateStr '20260524' -Now ([datetime]'2026-05-25T13:45:00')
 Assert-Equal $paths.HtmlFile '.\final_report_AuditGeneralDCR_CL_20260524_1345.html' 'HTML file naming mismatch.'
 Assert-Equal $paths.CsvFile 'C:\Temp\AuditGeneralDCR_CL_20260524.csv' 'CSV file naming mismatch.'
@@ -62,6 +83,9 @@ if (-not [System.IO.Path]::IsPathRooted($paths.HtmlFilePath)) {
     throw "HTML write path must be absolute for reliable file creation, got '$($paths.HtmlFilePath)'."
 }
 
+$mergedPaths = Get-MergedLogArtifactPaths -TempDir 'C:\Temp' -AnalysisDateStr '20260518_20260524' -Now ([datetime]'2026-05-25T13:45:00')
+Assert-Equal $mergedPaths.HtmlFile '.\final_report_merged_20260518_20260524_1345.html' 'Merged HTML file naming mismatch.'
+
 $auditProfile = Get-TableAnalysisProfile -TableName 'AuditGeneralDCR_CL'
 Assert-Equal ($auditProfile.GroupFields -join ',') 'Activity,Operation,Workload' 'AuditGeneral grouping fields mismatch.'
 Assert-Equal $auditProfile.UseCompositeOperationGroup $true 'AuditGeneral should use composite operation grouping.'
@@ -70,8 +94,27 @@ $sharePointProfile = Get-TableAnalysisProfile -TableName 'SharePointAuditDCR_CL'
 Assert-Equal ($sharePointProfile.GroupFields -join ',') 'Activity,Operation,Workload' 'SharePointAudit grouping fields mismatch.'
 Assert-Equal $sharePointProfile.UseCompositeOperationGroup $true 'SharePointAudit should use composite operation grouping.'
 
+$auditLogsProfile = Get-TableAnalysisProfile -TableName 'AuditLogs'
+Assert-Equal $auditLogsProfile.UserFields[0] 'InitiatedByUserPrincipalName' 'AuditLogs should prefer scalar actor UPN before dynamic InitiatedBy JSON.'
+
 $groupRow = [PSCustomObject]@{ Activity = 'FileAccessed'; Operation = 'Open'; Workload = 'SharePoint' }
 Assert-Equal (Get-OperationGroupValue -Row $groupRow -TableName 'AuditGeneralDCR_CL') 'FileAccessed | Open | SharePoint' 'Composite operation grouping mismatch.'
+
+Assert-Equal (Test-DeleteOrDisableOperation -Operation 'Delete user' -TableName 'AuditLogs') $true 'Delete operation should be high privilege.'
+Assert-Equal (Test-DeleteOrDisableOperation -Operation 'Disable account' -TableName 'AuditGeneralDCR_CL') $true 'Disable operation should be high privilege.'
+Assert-Equal (Test-DeleteOrDisableOperation -Operation 'Search' -TableName 'AuditGeneralDCR_CL') $false 'Search should not be high privilege.'
+Assert-Equal (Test-DeleteOrDisableOperation -Operation 'Disabled Account | Department: IT' -TableName 'AzureADUsersDCR_CL') $false 'AzureADUsers snapshot disabled state should not be high privilege.'
+Assert-Equal (Test-LogOffHours -TimeGenerated '2026-05-26T13:30:00Z') $true '21:30 China time should be off hours.'
+Assert-Equal (Test-LogOffHours -TimeGenerated '2026-05-26T02:00:00Z') $false '10:00 China time should be working hours.'
+
+$trustedRules = Get-TrustedIpRules -Paths @((Join-Path (Get-Location) 'TrustedLocation_IDC_Ali.txt'), (Join-Path (Get-Location) 'TrustedLocation_KJ.txt'))
+Assert-Equal (Test-IpInTrustedRules -IP '47.102.133.2' -Rules $trustedRules) $true 'Trusted IP should match rules.'
+Assert-Equal (Test-IpInTrustedRules -IP '47.102.133.2:443' -Rules $trustedRules) $true 'Trusted IP with port should match rules.'
+Assert-Equal (Test-IpInTrustedRules -IP 'client=47.102.133.2:443' -Rules $trustedRules) $true 'Trusted IP with prefix and port should match rules.'
+Assert-Equal (Test-IpInTrustedRules -IP '8.8.8.8' -Rules $trustedRules) $false 'Untrusted IP should not match rules.'
+Assert-Equal (Test-PrivateOrInvalidIp -IP '10.1.2.3:443') $true 'Private IP with port should be invalid for public suspicious IP checks.'
+Assert-Equal (Test-PrivateOrInvalidIp -IP '127.0.0.1:443') $true 'Loopback IP with port should be invalid for public suspicious IP checks.'
+Assert-Equal (Test-PrivateOrInvalidIp -IP 'client=0.0.0.0:123') $true 'Unspecified IP with prefix and port should be invalid for public suspicious IP checks.'
 
 $query = New-LogTableQuery -TableName 'WQCLogDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00')
 if ($query -notmatch '^WQCLogDCR_CL \| where TimeGenerated >= datetime\(2026-05-23T16:00:00Z') {
@@ -79,6 +122,19 @@ if ($query -notmatch '^WQCLogDCR_CL \| where TimeGenerated >= datetime\(2026-05-
 }
 if ($query -notmatch 'TimeGenerated < datetime\(2026-05-24T16:00:00Z') {
     throw "Query does not include expected end filter: $query"
+}
+
+$riskSigninQuery = New-LogTableQuery -TableName 'SigninLogs' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00') -RiskOnly
+if ($riskSigninQuery -notmatch '__isSigninSuspiciousSuccess') {
+    throw "Risk-only SigninLogs query should include suspicious success prefilter: $riskSigninQuery"
+}
+if ($riskSigninQuery -notmatch '__isPublicUntrustedIp') {
+    throw "Risk-only query should include public untrusted IP prefilter: $riskSigninQuery"
+}
+
+$riskLicenseQuery = New-LogTableQuery -TableName 'AssignedLicensesDCR_CL' -StartTime ([datetime]'2026-05-24T00:00:00+08:00') -EndTime ([datetime]'2026-05-25T00:00:00+08:00') -RiskOnly
+if ($riskLicenseQuery -notmatch 'summarize TimeGenerated=max\(TimeGenerated\), UsedUsers=dcount\(UserPrincipalName\)') {
+    throw "Risk-only AssignedLicenses query should summarize license usage before export: $riskLicenseQuery"
 }
 
 $matchingMeta = [PSCustomObject]@{

@@ -44,7 +44,13 @@ param(
     [switch]$ForceLogin,
 
     [Parameter(Mandatory = $false)]
-    [string]$ExportCsv
+    [string]$ExportCsv,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$RepairAzModules,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$RiskOnly
 )
 
 # ============================================================
@@ -66,6 +72,12 @@ function Initialize-Modules {
     #>
     Write-Host "`n=== Checking Az Modules ===" -ForegroundColor Cyan
 
+    if ($RepairAzModules) {
+        Repair-AzModules
+    }
+
+    Get-Module AzureRM* -ErrorAction SilentlyContinue | Remove-Module -Force -ErrorAction SilentlyContinue
+
     $requiredModules = @("Az.Accounts", "Az.OperationalInsights")
     foreach ($mod in $requiredModules) {
         $module = Get-Module -ListAvailable -Name $mod
@@ -77,6 +89,32 @@ function Initialize-Modules {
         Import-Module $mod -Force -WarningAction SilentlyContinue
         Write-Host "$mod Version: $((Get-Module $mod).Version)" -ForegroundColor Green
     }
+}
+
+function Repair-AzModules {
+    Write-Host "`n=== Repairing Az Modules ===" -ForegroundColor Cyan
+    Write-Host "Installing/updating Az.Accounts and Az.OperationalInsights for CurrentUser..." -ForegroundColor Yellow
+    Install-Module -Name Az.Accounts -Scope CurrentUser -Force -AllowClobber -Confirm:$false
+    Install-Module -Name Az.OperationalInsights -Scope CurrentUser -Force -AllowClobber -Confirm:$false
+    Write-Host "Az module repair completed. Restart PowerShell before running the report again." -ForegroundColor Green
+}
+
+function Write-AzModuleRepairHelp {
+    Write-Host "`n=== Az Module Repair Required ===" -ForegroundColor Yellow
+    Write-Host "Connect-AzAccount failed before authentication completed. This usually means incompatible Az module assemblies are installed or already loaded in the current PowerShell session." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "Recommended fix:" -ForegroundColor Cyan
+    Write-Host "1. Close all PowerShell windows."
+    Write-Host "2. Open a new PowerShell window."
+    Write-Host "3. Run:"
+    Write-Host "   Set-PSRepository -Name PSGallery -InstallationPolicy Trusted"
+    Write-Host "   Install-Module Az.Accounts -Scope CurrentUser -Force -AllowClobber"
+    Write-Host "   Install-Module Az.OperationalInsights -Scope CurrentUser -Force -AllowClobber"
+    Write-Host "4. Re-open PowerShell again, then run .\run-all.ps1"
+    Write-Host ""
+    Write-Host "Project shortcut:"
+    Write-Host "   .\azure_log_query.ps1 -RepairAzModules"
+    Write-Host ""
 }
 
 function Initialize-AzAuth {
@@ -110,20 +148,7 @@ function Initialize-AzAuth {
         }
     }
 
-    # Ensure Azure China Cloud environment is registered
-    $env = Get-AzEnvironment -Name $AzureEnvironment -ErrorAction SilentlyContinue
-    if (-not $env) {
-        Write-Host "Adding Azure China Cloud environment..." -ForegroundColor Yellow
-        Add-AzEnvironment -Name $AzureEnvironment `
-            -ActiveDirectoryEndpoint "https://login.chinacloudapi.cn/" `
-            -ResourceManagerEndpoint "https://management.chinacloudapi.cn/" `
-            -ServiceManagementUrl "https://management.core.chinacloudapi.cn/" `
-            -GalleryEndpoint "https://gallery.chinacloudapi.cn/" `
-            -ManagementPortalUrl "https://portal.azure.cn/" `
-            | Out-Null
-    }
-
-    # Interactive login
+    # Connect using built-in AzureChinaCloud environment name
     Write-Host "A browser window will open for login..." -ForegroundColor Yellow
     $connectParams = @{
         Environment = $AzureEnvironment
@@ -134,7 +159,16 @@ function Initialize-AzAuth {
         $connectParams['UseDeviceAuthentication'] = $true
     }
 
-    Connect-AzAccount @connectParams | Out-Null
+    try {
+        Connect-AzAccount @connectParams | Out-Null
+    }
+    catch {
+        if ($_.Exception -is [System.TypeLoadException] -or $_.Exception.Message -match 'SerializationSettings|TypeLoadException|ResourceManagementClient') {
+            Write-AzModuleRepairHelp
+            exit 20
+        }
+        throw
+    }
 
     $ctx = Get-AzContext
     Write-Host "Login successful! Account: $($ctx.Account)" -ForegroundColor Green
@@ -212,7 +246,7 @@ function Invoke-LogQuery {
                 Write-Host "Internal error: $($_.Exception.InnerException.Message)" -ForegroundColor Red
             }
         }
-        return
+        throw
     }
 
     # Parse response
@@ -245,6 +279,10 @@ Write-Host "============================================" -ForegroundColor Magen
 # Initialize modules
 Initialize-Modules
 
+if ($RepairAzModules) {
+    exit 0
+}
+
 # Authenticate
 Initialize-AzAuth
 
@@ -257,7 +295,7 @@ if ($TableName) {
     }
     $queryStartTime = [DateTime]::Parse($StartTime)
     $queryEndTime = [DateTime]::Parse($EndTime)
-    $Query = New-LogTableQuery -TableName $TableName -StartTime $queryStartTime -EndTime $queryEndTime
+    $Query = New-LogTableQuery -TableName $TableName -StartTime $queryStartTime -EndTime $queryEndTime -RiskOnly:$RiskOnly
 }
 
 # Execute query
