@@ -1,6 +1,6 @@
 ﻿---
 name: log-analytics-skill
-description: "用于查询 Azure Log Analytics 中的安全相关日志表，生成合并后的风险 HTML 报告。适用于排查登录失败、可疑成功登录、Service Principal 对象和权限变动、许可证使用量、邮箱容量、DCR 采集错误、Intune 审计风险。"
+description: "用于查询 Azure Log Analytics 中的安全相关日志表，生成合并后的风险 HTML 报告。适用于排查登录失败、可疑成功登录、Service Principal 对象和权限变动、许可证使用量、邮箱容量、DCR 采集错误、Intune 审计记录。"
 license: 专有
 ---
 
@@ -8,16 +8,16 @@ license: 专有
 
 ## 用途
 
-本 skill 从 Azure Log Analytics 查询指定时间范围内的日志数据，并生成一个合并 HTML 风险报告。报告只关注失败、异常、可疑、容量不足、删除、禁用、Service Principal 对象或权限变动、DCR 采集错误、Intune 审计风险等需要处理的信息。
+本 skill 从 Azure Log Analytics 查询指定时间范围内的日志数据，并生成一个合并 HTML 风险报告。报告只关注失败、异常、可疑、容量不足、删除、禁用、Service Principal 对象或权限变动、DCR 采集错误、Intune 审计记录等需要处理的信息。
 
-脚本目录为 `scripts`，HTML 模板在 `scripts/template`，可信 IP 配置在 `scripts/config`。根目录只保留这一个 `SKILL.md`。
+脚本目录为 `scripts`，HTML 报告模板已内嵌在 `scripts/generate-html-report.ps1`，可信 IP 配置在 `scripts/config`。根目录只保留这一个 `SKILL.md`。
 
 ## 运行方式
 
 在 skill 根目录运行：
 
 ```powershell
-.\scripts\run-all.ps1
+.\scripts\main.ps1
 ```
 
 脚本会提示输入时间范围：
@@ -31,10 +31,10 @@ n = 最近 n 天，最大 90 天
 常用参数：
 
 ```powershell
-.\scripts\run-all.ps1 -TableName "SigninLogs" -CustomStart "2026-06-10T00:00:00" -CustomEnd "2026-06-10T03:00:00"
-.\scripts\run-all.ps1 -StartDate "2026-06-01" -EndDate "2026-06-03"
-.\scripts\run-all.ps1 -ForceRefresh
-.\scripts\run-all.ps1 -NoRiskFilter
+.\scripts\main.ps1 -TableName "SigninLogs" -CustomStart "2026-06-10T00:00:00" -CustomEnd "2026-06-10T03:00:00"
+.\scripts\main.ps1 -StartDate "2026-06-01" -EndDate "2026-06-03"
+.\scripts\main.ps1 -ForceRefresh
+.\scripts\main.ps1 -NoRiskFilter
 ```
 
 ## 当前默认处理的表
@@ -72,9 +72,9 @@ WQCLogDCR_CL
 
 `DCRLogErrors`：按最近 30 天的 `InputStreamId`、`OperationName`、`Message` 去重统计采集错误。
 
-`IntuneAuditLogsDCR_CL`：展示失败、异常、删除或禁用类 Intune 审计记录，字段按 `Actor`、`Operation`、`Target` 提取。
+`IntuneAuditLogsDCR_CL`：展示所选时间范围内的 Intune 审计记录，兼容自定义日志常见的 `_s` 后缀字段，并按 `Actor`、`Operation`、`Target` 提取。
 
-`MailboxStatisticsDCR_CL`：关注可用空间低于配额 5% 的邮箱，以及 SharedMailbox 的数量、大小、可用空间和配额，大小单位为 GB。
+`MailboxStatisticsDCR_CL`：在查询端保留可用空间低于配额 5% 的异常邮箱，以及字段标识为 SharedMailbox 的邮箱；报告中分别展示邮箱容量风险和 SharedMailbox。
 
 `SigninLogs`：关注失败登录，以及 IP 不在可信位置内且登录应用不属于 `Windows Sign In`、`Microsoft Edge`、`Sangfor SASE VPN`、`Microsoft Office` 的成功登录。可疑 IP 栏只从 `SigninLogs` 产生。
 
@@ -92,13 +92,13 @@ Microsoft Service Tags 中与 Azure AD、Power BI、Azure Front Door、Microsoft
 
 ## 脚本链路
 
-`scripts/run-all.ps1` 负责选择时间范围、选择表、管理缓存、调用查询脚本并触发报告生成。
+`scripts/main.ps1` 负责选择时间范围、选择表、管理缓存、调用查询脚本并触发报告生成。
 
-`scripts/azure_log_query.ps1` 负责登录 Azure China Cloud，并使用 `Invoke-AzOperationalInsightsQuery` 查询 Log Analytics。
+`scripts/query-log-analytics.ps1` 负责登录 Azure China Cloud，并使用 `Invoke-AzOperationalInsightsQuery` 查询 Log Analytics。
 
-`scripts/log-analyzer-core.ps1` 保存表清单、时间范围、缓存、可信 IP、KQL 生成、字段解析和报告路径等公共逻辑。
+`scripts/log-analyzer-shared.ps1` 保存表清单、时间范围、缓存、可信 IP、KQL 生成、字段解析和报告路径等公共逻辑。
 
-`scripts/analyze.ps1` 读取 CSV，按风险规则聚合，生成合并 HTML 报告。
+`scripts/generate-html-report.ps1` 读取 CSV，按风险规则聚合，生成合并 HTML 报告。
 
 ## KQL 模板
 
@@ -204,7 +204,8 @@ IntuneAuditLogsDCR_CL
 | extend __status = tolower(Result)
 | extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
 | extend __isDeleteDisable = tolower(OperationName) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| where __isFailed or __isDeleteDisable
+| extend __RecordKind = case(__isDeleteDisable, "AggregatedDeleteDisable", __isFailed, "AggregatedIntuneAuditRisk", "AggregatedIntuneAuditRecord")
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
 ```
 
 ### MailboxStatisticsDCR_CL
@@ -212,14 +213,14 @@ IntuneAuditLogsDCR_CL
 ```kusto
 MailboxStatisticsDCR_CL
 | where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend __UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("MailboxOwnerUPN", ""), column_ifexists("PrimarySmtpAddress", ""), column_ifexists("DisplayName", ""), column_ifexists("Identity", ""), column_ifexists("Mail", ""), column_ifexists("EmailAddress", ""), "Unknown"))
-| summarize arg_max(TimeGenerated, *) by __UserPrincipalName
-| extend UserPrincipalName = __UserPrincipalName
-| extend RecipientTypeDetails = tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""), ""))
+| extend DisplayName = tostring(coalesce(column_ifexists("DisplayName", ""), column_ifexists("MailboxDisplayName", ""), column_ifexists("Name", ""), ""))
 | extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", "")))))
 | extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", "")))))
-| extend TotalItemSizeGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("TotalItemSizeGB", ""), column_ifexists("TotalItemSizeInGB", ""), column_ifexists("MailboxSizeGB", ""), column_ifexists("MailboxSize", ""), column_ifexists("SizeGB", ""), column_ifexists("TotalSizeGB", ""), column_ifexists("TotalItemSize", ""), column_ifexists("StorageUsedGB", ""), column_ifexists("StorageUsed", "")))))
-| where (QuotaLimitGB > 0 and AvailableSpaceGB / QuotaLimitGB < 0.05) or tolower(RecipientTypeDetails) contains "shared"
+| extend IsSharedMailbox = tostring(coalesce(column_ifexists("IsSharedMailbox", ""), column_ifexists("IsSharedMailBox", ""), column_ifexists("IsShared", ""), column_ifexists("SharedMailbox", ""), column_ifexists("SharedMailBox", ""), ""))
+| extend RecipientTypeDetails = tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("RecipientTypeDetail", ""), column_ifexists("RecipientTypeDetails_s", ""), column_ifexists("MailboxRecipientType", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""), ""))
+| where (QuotaLimitGB > 0 and AvailableSpaceGB < QuotaLimitGB * 0.05) or RecipientTypeDetails contains "Shared" or IsSharedMailbox in~ ("true", "1", "yes", "y")
+| extend UsagePercent = round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2)
+| project TimeGenerated, DisplayName, RecipientTypeDetails, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent
 ```
 
 ### SigninLogs
@@ -246,6 +247,6 @@ __failed | union isfuzzy=true __suspicious
 
 ## 维护规则
 
-新增表时，需要同时更新 `scripts/log-analyzer-core.ps1` 的 `$SupportedLogTables`、风险 KQL 生成函数、字段解析规则、报告聚合逻辑，以及本 `SKILL.md` 中的表说明和 KQL 模板。
+新增表时，需要同时更新 `scripts/log-analyzer-shared.ps1` 的 `$SupportedLogTables`、风险 KQL 生成函数、字段解析规则、报告聚合逻辑，以及本 `SKILL.md` 中的表说明和 KQL 模板。
 
 修改查询范围、风险条件、字段合并或 HTML 展示规则后，需要运行 `scripts/tests` 下的测试，并优先用最近 3 小时范围验证输出。

@@ -14,7 +14,7 @@
 
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-. (Join-Path $ScriptDir 'log-analyzer-core.ps1')
+. (Join-Path $ScriptDir 'log-analyzer-shared.ps1')
 
 if ($CsvPath.Count -ne $TableName.Count) {
     throw 'CsvPath and TableName must have the same number of items.'
@@ -104,9 +104,9 @@ function New-EventRecord {
     if (-not $firstTime) { $firstTime = [string]$Row.TimeGenerated }
     if (-not $lastTime) { $lastTime = [string]$Row.TimeGenerated }
     $activityDateTime = Get-AnyFieldValue -Row $Row -Names @('ActivityDateTime') -Default $lastTime
-    $detailFields = @('ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'DeliveryStatus', 'ErrorCode', 'ResultType', 'Subject', 'Message', 'ErrorMessage', 'PermissionName', 'TargetResources', 'ModifiedProperties')
+    $detailFields = @('ResultSignature', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'DeliveryStatus', 'ErrorCode', 'ResultType', 'Subject', 'Message', 'ErrorMessage', 'PermissionName', 'TargetResources', 'ModifiedProperties')
     if ($Table -eq 'AuditLogs') {
-        $detailFields = @('PermissionName', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'ResultType')
+        $detailFields = @('PermissionName', 'ResultSignature', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'ResultType')
     }
     if ($Table -eq 'DCRLogErrors') {
         $detailFields = @('Message', 'ErrorMessage', 'Details', 'Description', 'Status')
@@ -162,9 +162,56 @@ function New-TableHtml {
     return $html
 }
 
+function New-CodeBlockHtml {
+    param([string]$Text)
+    return '<pre class="kql-block"><code>' + (Escape-Html $Text) + '</code></pre>'
+}
+
 function Get-TimeValueForSort {
     param([string]$Value)
     try { return [DateTime]::Parse($Value) } catch { return [DateTime]::MinValue }
+}
+
+function Get-MailboxIdentityKey {
+    param([object]$Row)
+
+    $key = Get-AnyFieldValue -Row $Row -Names @('UserPrincipalName', 'MailboxOwnerUPN', 'PrimarySmtpAddress', 'EmailAddress', 'Mail', 'Identity', 'DisplayName') -Default ''
+    if ([string]::IsNullOrWhiteSpace($key)) {
+        return [guid]::NewGuid().ToString()
+    }
+    return $key.ToLowerInvariant()
+}
+
+function Get-LatestMailboxRows {
+    param([object[]]$Rows)
+
+    $latestByMailbox = @{}
+    foreach ($row in @($Rows)) {
+        $key = Get-MailboxIdentityKey -Row $row
+        $timeText = Get-AnyFieldValue -Row $row -Names @('TimeGenerated', 'LastTime', 'FirstTime') -Default ''
+        $time = Get-TimeValueForSort -Value $timeText
+        if (-not $latestByMailbox.ContainsKey($key) -or $time -ge $latestByMailbox[$key].Time) {
+            $latestByMailbox[$key] = [PSCustomObject]@{ Time = $time; Row = $row }
+        }
+    }
+    return @($latestByMailbox.Values | ForEach-Object { $_.Row })
+}
+
+function Get-MailboxTypeText {
+    param([object]$Row)
+
+    return Get-AnyFieldValue -Row $Row -Names @('RecipientTypeDetails', 'RecipientTypeDetail', 'RecipientTypeDetails_s', 'MailboxRecipientType', 'MailboxType', 'RecipientType') -Default ''
+}
+
+function Test-SharedMailboxRow {
+    param([object]$Row)
+
+    $type = Get-MailboxTypeText -Row $Row
+    if ($type -match '(?i)shared') { return $true }
+
+    $flag = Get-AnyFieldValue -Row $Row -Names @('IsSharedMailbox', 'IsSharedMailBox', 'IsShared', 'SharedMailbox', 'SharedMailBox') -Default ''
+    if ($flag -match '(?i)^(true|1|yes|y|shared|shared\s*mail\s*box|sharedmailbox)$') { return $true }
+    return $false
 }
 
 function Get-ShortListText {
@@ -221,13 +268,14 @@ function Format-UserForReport {
     param([string]$User)
 
     if ([string]::IsNullOrWhiteSpace($User)) { return 'Unknown' }
+    if ($User -match '\s/\s' -and $User -match '@') { return $User.Trim() }
     $emailPattern = '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
     return [regex]::Replace($User, $emailPattern, {
         param($match)
         $email = $match.Value
         $key = $email.ToLowerInvariant()
         if ($script:DisplayNameMap.ContainsKey($key)) {
-            return "$($script:DisplayNameMap[$key]) ($email)"
+            return "$($script:DisplayNameMap[$key]) / $email"
         }
         return $email
     }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
@@ -294,7 +342,7 @@ function Get-MessageTracePlainExplanation {
 
 function Get-SigninAppName {
     param([object]$Row)
-    return Get-AnyFieldValue -Row $Row -Names @('AppDisplayName', 'Application', 'ApplicationDisplayName', 'ClientAppUsed') -Default ''
+    return Get-AnyFieldValue -Row $Row -Names @('AppDisplayName', 'ServicePrincipalName', 'Application', 'ApplicationDisplayName', 'ClientAppUsed') -Default ''
 }
 
 function Test-AllowedSigninApp {
@@ -326,19 +374,6 @@ function Test-PimAuditNoise {
     return ($text -match '(?i)\bPIM\b|PIM activation expired')
 }
 
-function Test-ServicePrincipalAuditOperation {
-    param([string]$Operation)
-
-    if ([string]::IsNullOrWhiteSpace($Operation)) { return $false }
-    return @(
-        'Add service principal',
-        'Remove service principal',
-        'Hard delete service principal',
-        'Add app role assignment to service principal',
-        'Remove app role assignment from service principal'
-    ) -contains $Operation.Trim()
-}
-
 function Normalize-LicenseKey {
     param([string]$Name)
     if ([string]::IsNullOrWhiteSpace($Name)) { return '' }
@@ -356,38 +391,206 @@ function ConvertFrom-AccessTokenValue {
     return [string]$Token
 }
 
+function Get-WebExceptionResponseText {
+    param([object]$ErrorRecord)
+
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) {
+        return [string]$ErrorRecord.ErrorDetails.Message
+    }
+    try {
+        $response = $ErrorRecord.Exception.Response
+        if ($null -eq $response) { return '' }
+        $stream = $response.GetResponseStream()
+        if ($null -eq $stream) { return '' }
+        $reader = [System.IO.StreamReader]::new($stream)
+        try { return $reader.ReadToEnd() } finally { $reader.Dispose() }
+    } catch {
+        return ''
+    }
+}
+
+function Get-OAuthErrorCode {
+    param([string]$Body)
+    if ([string]::IsNullOrWhiteSpace($Body)) { return '' }
+    try {
+        $json = $Body | ConvertFrom-Json
+        if ($json.error) { return [string]$json.error }
+    } catch {
+    }
+    if ($Body -match 'authorization_pending') { return 'authorization_pending' }
+    if ($Body -match 'slow_down') { return 'slow_down' }
+    if ($Body -match 'authorization_declined') { return 'authorization_declined' }
+    if ($Body -match 'expired_token') { return 'expired_token' }
+    return ''
+}
+
+function Confirm-LicenseGraphVerification {
+    try {
+        Write-Host ''
+        Write-Host 'License 总量/剩余量需要 Microsoft Graph 验证。' -ForegroundColor Yellow
+        $choice = Read-Host '输入 Y 进行浏览器验证；输入 S 跳过验证并继续生成报告 [Y/S]'
+        return ($choice -notmatch '(?i)^(s|skip|n|no)$')
+    } catch {
+        return $true
+    }
+}
+
+function Get-GraphDeviceCodeTokenCandidate {
+    param(
+        [string]$TenantId = '420c4dab-8603-402f-afe0-75bc28c51c13'
+    )
+
+    if (-not (Confirm-LicenseGraphVerification)) {
+        throw '用户选择跳过 Microsoft Graph License API 验证。'
+    }
+
+    $clientIds = @(
+        '14d82eec-204b-4c2f-b7e8-296a70dab67e',
+        '1950a258-227b-4e31-a9cf-717495945fc2'
+    )
+    $loginBase = 'https://login.chinacloudapi.cn'
+    $graphScope = 'https://microsoftgraph.chinacloudapi.cn/Organization.Read.All offline_access'
+    $endpoint = 'https://microsoftgraph.chinacloudapi.cn/v1.0/subscribedSkus'
+    $tenant = if ([string]::IsNullOrWhiteSpace($TenantId)) { 'common' } else { $TenantId }
+    $deviceCodeUri = "$loginBase/$tenant/oauth2/v2.0/devicecode"
+    $tokenUri = "$loginBase/$tenant/oauth2/v2.0/token"
+
+    $device = $null
+    $clientId = ''
+    $deviceErrors = [System.Collections.Generic.List[string]]::new()
+    foreach ($candidateClientId in $clientIds) {
+        try {
+            $device = Invoke-RestMethod -Method Post -Uri $deviceCodeUri -Body @{
+                client_id = $candidateClientId
+                scope = $graphScope
+            } -ErrorAction Stop
+            $clientId = $candidateClientId
+            break
+        } catch {
+            $deviceErrors.Add("$candidateClientId`: $($_.Exception.Message)") | Out-Null
+        }
+    }
+    if ($null -eq $device) {
+        throw "无法启动 Microsoft Graph device code 登录。$($deviceErrors -join '；')"
+    }
+
+    Write-Host ''
+    Write-Host '=== Microsoft Graph License API Login Required ===' -ForegroundColor Yellow
+    Write-Host $device.message -ForegroundColor Cyan
+
+    $deadline = (Get-Date).AddSeconds([int]$device.expires_in)
+    $interval = [Math]::Max(5, [int]$device.interval)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds $interval
+        try {
+            $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenUri -Body @{
+                grant_type = 'urn:ietf:params:oauth:grant-type:device_code'
+                client_id = $clientId
+                device_code = $device.device_code
+            } -ErrorAction Stop
+            if ($tokenResponse.access_token) {
+                return [PSCustomObject]@{ Source = 'DeviceCode:ChinaGraph'; Endpoint = $endpoint; Token = [string]$tokenResponse.access_token }
+            }
+        } catch {
+            $body = Get-WebExceptionResponseText -ErrorRecord $_
+            $oauthError = Get-OAuthErrorCode -Body $body
+            if ($oauthError -eq 'authorization_pending') { continue }
+            if ($oauthError -eq 'slow_down') { $interval += 5; continue }
+            if ($oauthError -eq 'authorization_declined') { throw '用户拒绝了 Microsoft Graph device code 登录。' }
+            if ($oauthError -eq 'expired_token') { throw 'Microsoft Graph device code 已过期，请重新运行脚本获取新的 code。' }
+            if ($body) { throw "Microsoft Graph device code token 请求失败：$body" }
+            throw
+        }
+    }
+    throw 'Device code 登录超时。'
+}
+
+function Get-GraphAccessTokenCandidates {
+    $candidates = [System.Collections.Generic.List[object]]::new()
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $resources = @(
+        [PSCustomObject]@{ Name = 'ChinaGraph'; ResourceUrl = 'https://microsoftgraph.chinacloudapi.cn/'; Endpoint = 'https://microsoftgraph.chinacloudapi.cn/v1.0/subscribedSkus' },
+        [PSCustomObject]@{ Name = 'GlobalGraph'; ResourceUrl = 'https://graph.microsoft.com/'; Endpoint = 'https://graph.microsoft.com/v1.0/subscribedSkus' }
+    )
+
+    if (-not (Get-Command Get-AzAccessToken -ErrorAction SilentlyContinue)) {
+        Import-Module Az.Accounts -Force -ErrorAction SilentlyContinue
+    }
+    if (Get-Command Get-AzAccessToken -ErrorAction SilentlyContinue) {
+        foreach ($resource in $resources) {
+            try {
+                $tokenResponse = Get-AzAccessToken -ResourceUrl $resource.ResourceUrl -ErrorAction Stop
+                $token = ConvertFrom-AccessTokenValue -Token $tokenResponse.Token
+                if (-not [string]::IsNullOrWhiteSpace($token)) {
+                    $candidates.Add([PSCustomObject]@{ Source = "Az:$($resource.Name)"; Endpoint = $resource.Endpoint; Token = $token }) | Out-Null
+                }
+            } catch {
+                $errors.Add("Az $($resource.Name): $($_.Exception.Message)") | Out-Null
+            }
+        }
+    } else {
+        $errors.Add('Az.Accounts / Get-AzAccessToken 不可用') | Out-Null
+    }
+
+    if (Get-Command az -ErrorAction SilentlyContinue) {
+        foreach ($resource in $resources) {
+            try {
+                $jsonText = & az account get-access-token --resource $resource.ResourceUrl --output json 2>$null
+                if ($LASTEXITCODE -eq 0 -and $jsonText) {
+                    $tokenResponse = ($jsonText -join "`n") | ConvertFrom-Json
+                    if ($tokenResponse.accessToken) {
+                        $candidates.Add([PSCustomObject]@{ Source = "AzureCLI:$($resource.Name)"; Endpoint = $resource.Endpoint; Token = [string]$tokenResponse.accessToken }) | Out-Null
+                    }
+                }
+            } catch {
+                $errors.Add("Azure CLI $($resource.Name): $($_.Exception.Message)") | Out-Null
+            }
+        }
+    } else {
+        $errors.Add('Azure CLI az 不可用') | Out-Null
+    }
+
+    if ($candidates.Count -eq 0) {
+        try {
+            $candidates.Add((Get-GraphDeviceCodeTokenCandidate)) | Out-Null
+        } catch {
+            $errors.Add("DeviceCode ChinaGraph: $($_.Exception.Message)") | Out-Null
+        }
+    }
+
+    return [PSCustomObject]@{ Candidates = @($candidates.ToArray()); Errors = @($errors.ToArray()) }
+}
+
 function Get-LicenseSkuTotalsFromGraph {
     $result = [PSCustomObject]@{
         Success = $false
         Message = ''
         Skus = @{}
+        SkuList = @()
     }
 
     try {
-        if (-not (Get-Command Get-AzAccessToken -ErrorAction SilentlyContinue)) {
-            $result.Message = '无法获取 License 总量：当前 PowerShell 会话未加载 Az.Accounts / Get-AzAccessToken。'
-            return $result
+        $tokenCandidates = Get-GraphAccessTokenCandidates
+        if ($tokenCandidates.Candidates.Count -eq 0) {
+            throw "未能获取 Microsoft Graph 访问令牌。$($tokenCandidates.Errors -join '；')"
         }
 
-        $resourceUrl = 'https://graph.microsoft.com/'
-        $endpoint = 'https://graph.microsoft.com/v1.0/subscribedSkus'
-        $context = $null
-        if (Get-Command Get-AzContext -ErrorAction SilentlyContinue) {
-            $context = Get-AzContext -ErrorAction SilentlyContinue
+        $response = $null
+        $callErrors = [System.Collections.Generic.List[string]]::new()
+        foreach ($candidate in $tokenCandidates.Candidates) {
+            try {
+                $response = Invoke-RestMethod -Method Get -Uri $candidate.Endpoint -Headers @{ Authorization = "Bearer $($candidate.Token)" } -ErrorAction Stop
+                break
+            } catch {
+                $callErrors.Add("$($candidate.Source): $($_.Exception.Message)") | Out-Null
+            }
         }
-        if ($context -and $context.Environment -and $context.Environment.Name -eq 'AzureChinaCloud') {
-            $resourceUrl = 'https://microsoftgraph.chinacloudapi.cn/'
-            $endpoint = 'https://microsoftgraph.chinacloudapi.cn/v1.0/subscribedSkus'
-        }
-
-        $tokenResponse = Get-AzAccessToken -ResourceUrl $resourceUrl -ErrorAction Stop
-        $token = ConvertFrom-AccessTokenValue -Token $tokenResponse.Token
-        if ([string]::IsNullOrWhiteSpace($token)) {
-            throw 'Get-AzAccessToken returned an empty token.'
+        if ($null -eq $response) {
+            throw "Microsoft Graph subscribedSkus 调用失败。$($callErrors -join '；')"
         }
 
-        $response = Invoke-RestMethod -Method Get -Uri $endpoint -Headers @{ Authorization = "Bearer $token" } -ErrorAction Stop
         $map = @{}
+        $skuList = [System.Collections.Generic.List[object]]::new()
         foreach ($sku in @($response.value)) {
             $name = [string]$sku.skuPartNumber
             if ([string]::IsNullOrWhiteSpace($name)) { continue }
@@ -397,25 +600,48 @@ function Get-LicenseSkuTotalsFromGraph {
             }
             $consumed = if ($null -ne $sku.consumedUnits) { [int]$sku.consumedUnits } else { $null }
             $remaining = if ($null -ne $enabled -and $null -ne $consumed) { [Math]::Max(0, $enabled - $consumed) } else { $null }
-            $map[$name.ToUpperInvariant()] = [PSCustomObject]@{
+            $skuRecord = [PSCustomObject]@{
                 License = $name
                 Used = $consumed
                 Total = $enabled
                 Remaining = $remaining
             }
+            $skuList.Add($skuRecord) | Out-Null
+            $map[$name.ToUpperInvariant()] = $skuRecord
             $normalizedName = Normalize-LicenseKey -Name $name
             if ($normalizedName) {
-                $map[$normalizedName] = $map[$name.ToUpperInvariant()]
+                $map[$normalizedName] = $skuRecord
+            }
+            foreach ($plan in @($sku.servicePlans)) {
+                $planName = [string]$plan.servicePlanName
+                if ([string]::IsNullOrWhiteSpace($planName)) { continue }
+                $map[$planName.ToUpperInvariant()] = $skuRecord
+                $normalizedPlanName = Normalize-LicenseKey -Name $planName
+                if ($normalizedPlanName) { $map[$normalizedPlanName] = $skuRecord }
             }
         }
+        if ($skuList.Count -eq 0) { throw 'Microsoft Graph subscribedSkus 未返回任何许可证 SKU。' }
         $result.Success = $true
         $result.Message = "License 总量已通过 Microsoft Graph subscribedSkus 获取。"
         $result.Skus = $map
+        $result.SkuList = $skuList.ToArray()
         return $result
     } catch {
         $result.Message = "无法通过 Microsoft Graph 获取 License 总量：$($_.Exception.Message)"
         return $result
     }
+}
+
+function Test-LicenseMetricMissing {
+    param([object]$License)
+    if ($null -eq $License) { return $true }
+    foreach ($name in @('Used', 'Total', 'Remaining')) {
+        $value = $License.$name
+        if ($null -eq $value) { return $true }
+        if ([string]::IsNullOrWhiteSpace([string]$value)) { return $true }
+        if ([string]$value -eq 'N/A') { return $true }
+    }
+    return $false
 }
 
 function New-ReportSection {
@@ -491,8 +717,14 @@ foreach ($dataset in $datasets) {
         }
 
         $rowEventCount = Get-RowEventCount -Row $row
+        $recordKind = Get-AnyFieldValue -Row $row -Names @('__RecordKind') -Default ''
         $op = Get-OperationValue -Row $row -TableName $table
         $success = Get-SuccessValue -Row $row -TableName $table
+        if ($recordKind -eq 'AggregatedSuspiciousSigninSuccess') {
+            $success = 'true'
+        } elseif ($recordKind -eq 'AggregatedFailedSignin') {
+            $success = 'false'
+        }
         $ip = Get-NormalizedIpValue -IP (Get-ClientIpValue -Row $row -TableName $table)
         $isUsablePublicIp = -not (Test-PrivateOrInvalidIp -IP $ip)
         $isTrustedIp = Test-IpInTrustedRules -IP $ip -Rules $trustedRules
@@ -545,7 +777,7 @@ foreach ($dataset in $datasets) {
             $intuneAuditRows.Add((New-EventRecord -Table $table -Row $row -Reason 'Intune 审计风险')) | Out-Null
         }
 
-        if ($table -eq 'AuditLogs' -and $success -eq 'true' -and (Test-ServicePrincipalAuditOperation -Operation $op)) {
+        if ($table -eq 'AuditLogs' -and $recordKind -eq 'AggregatedServicePrincipalAudit') {
             $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason 'Service Principal 对象 / 权限成功变动')) | Out-Null
         }
     }
@@ -590,16 +822,17 @@ $licenseUsage = @(
             [PSCustomObject]@{ License = $_.Name; Used = $used; Total = $(if ($null -ne $_.Total) { [int]$_.Total } else { 'N/A' }); Remaining = $remaining; Source = $(if ($null -ne $_.Total) { 'Log' } else { 'Pending' }) }
         }
 )
-$licenseStatusNote = 'License 使用量优先使用 AssignedLicensesDCR_CL；若日志缺少总量，会尝试调用 Microsoft Graph subscribedSkus 获取总量和剩余量。'
-$licensesNeedGraph = @($licenseUsage | Where-Object { $_.Total -eq 'N/A' -or $_.Remaining -eq 'N/A' })
+$licenseStatusNote = 'License 使用量优先使用 AssignedLicensesDCR_CL；若日志缺少总量或剩余量，会尝试调用 Microsoft Graph subscribedSkus 获取，并支持按 servicePlans[].servicePlanName 映射。'
+$licensesNeedGraph = @($licenseUsage | Where-Object { Test-LicenseMetricMissing -License $_ })
 if ($licensesNeedGraph.Count -gt 0 -or $licenseUsage.Count -eq 0) {
     $graphLicenseResult = Get-LicenseSkuTotalsFromGraph
     if ($graphLicenseResult.Success) {
         if ($licenseUsage.Count -eq 0) {
             $licenseUsage = @(
-                $graphLicenseResult.Skus.Values |
+                $graphLicenseResult.SkuList |
+                    Where-Object { $null -ne $_.Total -and $_.Total -gt 0 } |
                     Sort-Object @{ Expression = { if ($null -ne $_.Used) { $_.Used } else { 0 } }; Descending = $true }, License |
-                    Select-Object -Unique -First 4 |
+                    Select-Object -First 4 |
                     ForEach-Object {
                         [PSCustomObject]@{ License = $_.License; Used = $_.Used; Total = $_.Total; Remaining = $_.Remaining; Source = 'Graph' }
                     }
@@ -623,30 +856,52 @@ if ($licensesNeedGraph.Count -gt 0 -or $licenseUsage.Count -eq 0) {
     $licenseStatusNote = "$licenseStatusNote $($graphLicenseResult.Message)"
 }
 
+$unresolvedLicenses = @($licenseUsage | Where-Object { Test-LicenseMetricMissing -License $_ })
+if ($licenseUsage.Count -eq 0) {
+    $licenseUsage = @(
+        [PSCustomObject]@{ License = '未识别到 License'; Used = 0; Total = 0; Remaining = 0; Source = 'Unavailable' }
+    )
+    $licenseStatusNote = "$licenseStatusNote 未识别到 License 日志记录，已用 0 填充，避免报告出现 N/A。"
+} elseif ($unresolvedLicenses.Count -gt 0) {
+    $missingNames = ($unresolvedLicenses | ForEach-Object { $_.License } | Sort-Object -Unique) -join ', '
+    foreach ($license in $unresolvedLicenses) {
+        $used = Get-NumberValue $license.Used
+        if ($null -eq $used) { $used = 0 }
+        $license.Used = [int]$used
+        $license.Total = [int]$used
+        $license.Remaining = 0
+        if ([string]::IsNullOrWhiteSpace([string]$license.Source) -or $license.Source -eq 'Pending' -or $license.Source -eq 'Missing') {
+            $license.Source = 'LogOnly-Unverified'
+        }
+    }
+    $licenseStatusNote = "$licenseStatusNote 以下 License 未能通过日志或 Graph 取得总量，已使用日志使用量填充总量下限并将剩余显示为 0，报告不再显示 N/A：$missingNames。"
+}
+
 $mailboxRisks = [System.Collections.Generic.List[object]]::new()
 $sharedMailboxRows = [System.Collections.Generic.List[object]]::new()
-$mailboxRows = @($datasets | Where-Object { $_.Table -eq 'MailboxStatisticsDCR_CL' } | ForEach-Object { $_.Rows })
+$mailboxRows = Get-LatestMailboxRows -Rows @($datasets | Where-Object { $_.Table -eq 'MailboxStatisticsDCR_CL' } | ForEach-Object { $_.Rows })
 foreach ($row in $mailboxRows) {
     $available = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('AvailableSpaceGB', 'AvailableSpaceInGB', 'AvailableSpace') -Default '')
     $quota = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('QuotaLimitGB', 'QuotaGB', 'StorageQuotaGB', 'ProhibitSendReceiveQuotaGB') -Default '')
+    $usagePercent = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('UsagePercent') -Default '')
     $user = Get-UserValue -Row $row -TableName 'MailboxStatisticsDCR_CL'
     $size = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('TotalItemSizeGB', 'TotalItemSizeInGB', 'MailboxSizeGB', 'MailboxSize', 'SizeGB', 'TotalSizeGB', 'TotalItemSize', 'StorageUsedGB', 'StorageUsed') -Default '')
     if ($null -eq $size -and $null -ne $available -and $null -ne $quota -and $quota -ge $available) {
         $size = $quota - $available
     }
-    $type = Get-AnyFieldValue -Row $row -Names @('RecipientTypeDetails', 'MailboxType', 'RecipientType') -Default ''
+    $type = Get-MailboxTypeText -Row $row
 
     if ($null -ne $available -and $null -ne $quota -and $quota -gt 0 -and ($available / $quota) -lt 0.05) {
         $mailboxRisks.Add([PSCustomObject]@{
             User = Format-UserForReport -User $user
             AvailableGB = [Math]::Round($available, 2)
             QuotaGB = [Math]::Round($quota, 2)
-            Usage = '{0:P1}' -f (1 - ($available / $quota))
+            Usage = if ($null -ne $usagePercent) { "$usagePercent%" } else { '{0:P1}' -f (1 - ($available / $quota)) }
             Reason = 'AvailableSpaceGB 低于 QuotaLimitGB 的 5%，可能导致无法收发邮件'
         }) | Out-Null
     }
 
-    if ($type -match '(?i)shared') {
+    if (Test-SharedMailboxRow -Row $row) {
         $sharedMailboxRows.Add([PSCustomObject]@{
             User = Format-UserForReport -User $user
             Type = if ($type) { $type } else { 'SharedMailbox' }
@@ -683,7 +938,7 @@ $riskCounts = [PSCustomObject]@{
     MailboxLowSpace = $mailboxRisks.Count
     SharedMailboxes = $sharedMailboxRows.Count
     IdentityPermissionChanges = Get-EventCountSum -Rows $identityPermissionChanges
-    DcrLogErrors = Get-EventCountSum -Rows $dcrLogErrorRows
+    DcrLogErrors = $dcrLogErrorRows.Count
     IntuneAudit = Get-EventCountSum -Rows $intuneAuditRows
 }
 
@@ -697,65 +952,153 @@ $microsoftTrustedNote = if ($microsoftTrustedCount -gt 0) {
     'Microsoft Service Tags 缓存不可用或未下载，本次仅使用本地可信 IP 文件。'
 }
 
+$failedSigninKql = @'
+union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
+| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
+| extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
+| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", "")))
+| extend __status = tolower(ResultType)
+| extend __isSuccess = __status in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or tolong(ResultType) > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| where __isFailed
+| summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription
+'@
+$failedOpsLogic = @'
+处理逻辑：
+1. 各表查询端先筛选失败/异常、删除/Disable、消息追踪异常等风险记录。
+2. 报告端排除已经单独展示的登录失败、删除/Disable、DCRLogErrors、Intune 审计等栏目。
+3. 剩余失败/异常按 表 + 用户 + 操作 + 状态/原因 合并，只显示最后时间和次数。
+'@
+$deleteDisableKql = @'
+union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
+| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| extend OperationText = strcat(column_ifexists("OperationName", ""), " ", column_ifexists("ActivityDisplayName", ""), " ", column_ifexists("Activity", ""), " ", column_ifexists("Operation", ""))
+| where tolower(OperationText) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
+| summarize LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, Result, ResultDescription
+'@
+$suspiciousSuccessKql = @'
+union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
+| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
+| extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
+| extend AppDisplayName = tostring(coalesce(column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), "Unknown"))
+| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
+| extend __isSuccess = tolower(ResultType) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
+| where __isSuccess and __isPublicIp and not(__isTrustedIp)
+| where TableName != "SigninLogs" or AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")
+| summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType
+'@
+$suspiciousIpKql = @'
+SigninLogs
+| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
+| where __isPublicIp and not(__isTrustedIp)
+| summarize LastTime=max(TimeGenerated), EventCount=count() by IPAddress, AppDisplayName
+'@
+$clientIpRankLogic = @'
+处理逻辑：
+1. 从已参与报告的数据集中提取可用公网 Client IP。
+2. 排除“可疑 IP”栏目中已经出现的 IP，避免同一风险重复展示。
+3. 按出现次数倒序展示 Top 20。
+'@
+$licenseLogic = @'
+AssignedLicensesDCR_CL
+| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| summarize UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus
+
+补充逻辑：
+当日志中的 TotalLicenses 缺失时，报告通过 Microsoft Graph subscribedSkus 获取总量/剩余量。
+'@
+$sourceStatusLogic = @'
+处理逻辑：
+1. main.ps1 按所选时间范围逐表调用 query-log-analytics.ps1 导出 CSV。
+2. 对 DCRLogErrors、MailboxStatisticsDCR_CL、IntuneAuditLogsDCR_CL 和登录相关表跳过表级缓存，确保使用当前查询逻辑。
+3. 本栏目只展示本次实际参与合并报告的 CSV 数据源、记录数和文件名。
+'@
+$permissionKql = @'
+AuditLogs
+| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| where isnotempty(InitiatedBy.user.userPrincipalName)
+| where not(OperationName has "PIM" or ActivityDisplayName has "PIM" or ResultReason has "PIM activation expired")
+| extend __isSuccess = tolower(Result) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
+| where __isSuccess and OperationName in~ (
+    "Add service principal",
+    "Remove service principal",
+    "Hard delete service principal",
+    "Add app role assignment to service principal",
+    "Remove app role assignment from service principal"
+)
+| summarize ActivityDateTime=max(todatetime(ActivityDateTime)), EventCount=count() by Actor, OperationName, Target, PermissionName
+'@
+
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) $r.IP }
-$failedSigninHtml = New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '首次时间', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
-    param($r) @($r.Count, $r.FirstTime, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
-}
+$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
+    param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
+})
 $failedOpsGrouped = Group-EventRecords -Rows $failedOperations -KeyBuilder { param($r) "$($r.Table)|$($r.User)|$($r.Operation)|$($r.Detail)" }
-$failedOpsHtml = New-TableHtml -Rows ($failedOpsGrouped | Select-Object -First 50) -Columns @('次数', '首次时间', '最后时间', '表', '用户', '操作', '状态/原因') -CellBuilder {
-    param($r) @($r.Count, $r.FirstTime, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
-}
+$failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Rows ($failedOpsGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', '表', '用户', '操作', '状态/原因') -CellBuilder {
+    param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
+})
 $deleteDisableGrouped = Group-EventRecords -Rows $deleteDisableEvents -KeyBuilder { param($r) "$($r.Table)|$($r.User)|$($r.Operation)|$($r.Detail)" }
-$deleteDisableHtml = New-TableHtml -Rows ($deleteDisableGrouped | Select-Object -First 80) -Columns @('次数', '首次时间', '最后时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
-    param($r) @($r.Count, $r.FirstTime, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
-}
-$suspiciousIpHtml = New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '原因') -CellBuilder {
+$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
+    param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
+})
+$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '原因') -CellBuilder {
     param($r) @($r.IP, $r.Reason)
-}
+})
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.IP)" }
-$signinSuspiciousHtml = New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '首次时间', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
-    param($r) @($r.Count, $r.FirstTime, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
-}
-$topClientIpHtml = New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
+$signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
+    param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
+})
+$topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
-}
-$licenseHtml = New-TableHtml -Rows $licenseUsage -Columns @('License 名称', '已使用', '总数', '剩余', '来源') -CellBuilder {
+})
+$licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseUsage -Columns @('License 名称', '已使用', '总数', '剩余', '来源') -CellBuilder {
     param($r) @($r.License, $r.Used, $r.Total, $r.Remaining, $r.Source)
-}
-$mailboxRiskHtml = New-TableHtml -Rows ($mailboxRisks | Sort-Object AvailableGB | Select-Object -First 50) -Columns @('邮箱', 'AvailableSpaceGB', 'QuotaLimitGB', '使用率', '风险') -CellBuilder {
+})
+$mailboxRiskKql = "MailboxStatisticsDCR_CL`r`n| where AvailableSpaceGB < QuotaLimitGB * 0.05`r`n| extend UsagePercent = round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2)`r`n| project TimeGenerated, DisplayName, AvailableSpaceGB, QuotaLimitGB, UsagePercent"
+$mailboxRiskHtml = (New-CodeBlockHtml -Text $mailboxRiskKql) + (New-TableHtml -Rows ($mailboxRisks | Sort-Object AvailableGB | Select-Object -First 50) -Columns @('邮箱', 'AvailableSpaceGB', 'QuotaLimitGB', '使用率', '风险') -CellBuilder {
     param($r) @($r.User, $r.AvailableGB, $r.QuotaGB, $r.Usage, $r.Reason)
-}
-$sharedMailboxHtml = New-TableHtml -Rows ($sharedMailboxRows | Sort-Object SizeGB -Descending | Select-Object -First 80) -Columns @('SharedMailbox', '类型', '大小GB', 'AvailableSpaceGB', 'QuotaLimitGB') -CellBuilder {
+})
+$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or IsSharedMailbox in~ (`"true`", `"1`", `"yes`", `"y`")`r`n| project TimeGenerated, DisplayName, RecipientTypeDetails, AvailableSpaceGB, QuotaLimitGB"
+$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object SizeGB -Descending | Select-Object -First 80) -Columns @('SharedMailbox', '类型', '大小GB', 'AvailableSpaceGB', 'QuotaLimitGB') -CellBuilder {
     param($r) @($r.User, $r.Type, "$($r.SizeGB) GB", $r.AvailableGB, $r.QuotaGB)
-}
+})
 $permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.PermissionName)" }
-$permissionHtml = New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
+$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
     param($r) @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $r.PermissionName)
-}
-$dcrLogErrorGrouped = Group-EventRecords -Rows $dcrLogErrorRows -KeyBuilder { param($r) "$($r.Target)|$($r.Operation)|$($r.Detail)" }
-$dcrLogErrorHtml = New-TableHtml -Rows ($dcrLogErrorGrouped | Select-Object -First 80) -Columns @('次数', '首次时间', '最后时间', 'InputStreamId', 'OperationName', 'Message') -CellBuilder {
-    param($r) @($r.Count, $r.FirstTime, $r.LastTime, $r.Target, $r.Operation, $r.Detail)
-}
+})
+$dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distinct InputStreamId, OperationName, Message"
+$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('InputStreamId', 'OperationName', 'Message') -CellBuilder {
+    param($r) @($r.Target, $r.Operation, $r.Detail)
+})
+$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.Detail)" }
-$intuneHtml = New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '首次时间', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
-    param($r) @($r.Count, $r.FirstTime, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
-}
-$sourceStatusHtml = New-TableHtml -Rows $sourceStatusRows -Columns @('表', '记录数', 'CSV') -CellBuilder {
+$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
+    param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
+})
+$sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtml -Rows $sourceStatusRows -Columns @('表', '记录数', 'CSV') -CellBuilder {
     param($r) @($r.Table, $r.Records, $r.Source)
-}
+})
 
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = 'AAD / Managed Identity / Service Principal 登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。相同 IP 的多次失败已合并。'; Content = $failedSigninHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '仅显示用户操作者触发的 Add/Remove/Hard delete service principal，以及 Add/Remove app role assignment to service principal；PIM 相关记录已排除。'; Content = $permissionHtml; Open = $true },
     [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；AuditLogs 已去掉目标字段，并按除时间外相同的记录合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。相同主体、应用、IP 已合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'client-ip-rank'; Title = '客户端 IP 排行'; Note = '此排行已排除所有出现在“可疑 IP”中的 IP。'; Content = $topClientIpHtml; Open = $false },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'mailbox-low-space'; Title = '邮箱容量风险'; Note = 'AvailableSpaceGB 低于 QuotaLimitGB 的 5% 时列为风险；邮箱用量耗尽可能导致无法收发邮件。'; Content = $mailboxRiskHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = '显示 SharedMailbox 数量、大小 GB、可用空间和配额。'; Content = $sharedMailboxHtml; Open = $false },
-    [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '仅显示用户操作者触发的 Add/Remove/Hard delete service principal，以及 Add/Remove app role assignment to service principal；PIM 相关记录已排除。'; Content = $permissionHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '按最近 30 天的 InputStreamId、OperationName、Message 去重统计。'; Content = $dcrLogErrorHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计风险'; Note = '显示 IntuneAuditLogsDCR_CL 中失败、异常、删除或禁用类审计记录，字段已按 Actor / Operation / Target 提取。'; Content = $intuneHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'mailbox-low-space'; Title = '邮箱容量风险'; Note = '使用 MailboxStatisticsDCR_CL 的低可用空间 KQL 在查询端直接筛选异常邮箱。'; Content = $mailboxRiskHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = '显示 MailboxStatisticsDCR_CL 中被 RecipientTypeDetails、MailboxType 或 IsSharedMailbox 字段标识为 SharedMailbox 的邮箱。'; Content = $sharedMailboxHtml; Open = $false },
+    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的 InputStreamId、OperationName、Message 去重展示。'; Content = $dcrLogErrorHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true },
     [PSCustomObject]@{ Id = 'failed-ops'; Title = '其他失败/异常操作'; Note = '登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录，并按相似内容合并。'; Content = $failedOpsHtml; Open = $false },
     [PSCustomObject]@{ Id = 'source-status'; Title = '数据源查询状态'; Note = '显示本次参与生成合并报告的 CSV 数据源。'; Content = $sourceStatusHtml; Open = $false }
 )
@@ -827,6 +1170,8 @@ th { color: var(--muted); font-weight: 600; background: #111a24; position: stick
 td { color: #e7edf5; }
 .risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .small { font-size: 12px; color: var(--muted); }
+.kql-block { margin: 14px 18px 0; background: #111a24; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; color: #dbeafe; font-size: 12px; line-height: 1.55; }
+.kql-block code { font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; }
 @media (max-width: 980px) {
   .layout { display: block; padding: 18px; }
   .side-nav { position: static; max-height: none; margin-bottom: 18px; }
@@ -856,7 +1201,7 @@ $sideNavHtml
     <div class="card"><div class="label">邮箱低容量</div><div class="value red">$($riskCounts.MailboxLowSpace)</div></div>
     <div class="card"><div class="label">SharedMailbox</div><div class="value blue">$($riskCounts.SharedMailboxes)</div></div>
     <div class="card"><div class="label">DCRLogErrors</div><div class="value red">$($riskCounts.DcrLogErrors)</div></div>
-    <div class="card"><div class="label">Intune 审计风险</div><div class="value amber">$($riskCounts.IntuneAudit)</div></div>
+    <div class="card"><div class="label">Intune 审计记录</div><div class="value amber">$($riskCounts.IntuneAudit)</div></div>
   </div>
 
   $reportSectionsHtml

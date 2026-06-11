@@ -1,0 +1,225 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log Analytics 合并风险报告</title>
+<style>
+:root {
+  --bg: #0f1720;
+  --panel: #151f2b;
+  --panel2: #1d2a38;
+  --text: #eef4fb;
+  --muted: #9fb0c2;
+  --line: #2d3d4f;
+  --red: #ff6b6b;
+  --amber: #f3b95f;
+  --green: #66d98f;
+  --blue: #6bb6ff;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", Arial, sans-serif; }
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 22px; max-width: 1680px; margin: 0 auto; padding: 28px; }
+.wrap { min-width: 0; }
+.side-nav { position: sticky; top: 18px; align-self: start; max-height: calc(100vh - 36px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+.nav-title { color: var(--muted); font-size: 12px; margin: 2px 6px 10px; }
+.side-nav a { display: block; color: var(--text); text-decoration: none; border-radius: 6px; padding: 8px 9px; font-size: 13px; line-height: 1.35; }
+.side-nav a:hover { background: var(--panel2); }
+.header { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 22px; }
+h1 { margin: 0 0 10px; font-size: 28px; font-weight: 700; }
+.meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); }
+.tag { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 15px; }
+.label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.value { font-size: 26px; font-weight: 700; }
+.red { color: var(--red); } .amber { color: var(--amber); } .green { color: var(--green); } .blue { color: var(--blue); }
+.section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 0; margin-bottom: 18px; scroll-margin-top: 18px; }
+.section summary { cursor: pointer; list-style: none; padding: 16px 18px; border-bottom: 1px solid transparent; }
+.section summary::-webkit-details-marker { display: none; }
+.section summary span { font-size: 19px; font-weight: 700; }
+.section summary span::before { content: "▸"; color: var(--blue); display: inline-block; margin-right: 8px; transform: translateY(-1px); }
+.section[open] summary { border-bottom-color: var(--line); }
+.section[open] summary span::before { content: "▾"; }
+.section > .note, .section > .table-scroll, .section > .risk-grid, .section > .empty { margin: 14px 18px 18px; }
+.note { color: var(--muted); line-height: 1.6; }
+.empty { color: var(--green); margin: 0; }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 760px; }
+th, td { border-bottom: 1px solid var(--line); padding: 9px 10px; text-align: left; vertical-align: top; font-size: 13px; }
+th { color: var(--muted); font-weight: 600; background: #111a24; position: sticky; top: 0; }
+td { color: #e7edf5; }
+.risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.small { font-size: 12px; color: var(--muted); }
+.kql-block { margin: 14px 18px 0; background: #111a24; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; color: #dbeafe; font-size: 12px; line-height: 1.55; }
+.kql-block code { font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; }
+@media (max-width: 980px) {
+  .layout { display: block; padding: 18px; }
+  .side-nav { position: static; max-height: none; margin-bottom: 18px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="side-nav"><div class="nav-title">目录</div><a href="#failed-signins">AAD / Managed Identity / Service Principal 登录失败</a><a href="#identity-permission">Service Principal 对象 / 权限成功变动</a><a href="#delete-disable">删除 / Disable 操作</a><a href="#suspicious-success">可疑成功登录</a><a href="#suspicious-ip">可疑 IP</a><a href="#client-ip-rank">客户端 IP 排行</a><a href="#license">License 使用量与剩余数量</a><a href="#mailbox-low-space">邮箱容量风险</a><a href="#shared-mailbox">SharedMailbox</a><a href="#dcr-log-errors">DCRLogErrors</a><a href="#intune-audit">Intune 审计记录</a><a href="#failed-ops">其他失败/异常操作</a><a href="#source-status">数据源查询状态</a></nav>
+<div class="wrap">
+  <div class="header">
+    <h1>Log Analytics 合并风险报告</h1>
+    <div class="meta">
+      <span class="tag">查询时间段: 2026-05-12 17:00:00 to 2026-06-11 17:00:00</span>
+      <span class="tag">数据表: 4</span>
+      <span class="tag">总记录数: 45</span>
+      <span class="tag">可信 IP 规则: 4192</span>
+    </div>
+  </div>
+
+  <div class="summary">
+    <div class="card"><div class="label">登录失败</div><div class="value red">0</div></div>
+    <div class="card"><div class="label">失败/异常操作</div><div class="value red">55668</div></div>
+    <div class="card"><div class="label">删除 / Disable</div><div class="value amber">43</div></div>
+    <div class="card"><div class="label">可疑 IP</div><div class="value amber">0</div></div>
+    <div class="card"><div class="label">可信位置外成功登录</div><div class="value amber">0</div></div>
+    <div class="card"><div class="label">邮箱低容量</div><div class="value red">0</div></div>
+    <div class="card"><div class="label">SharedMailbox</div><div class="value blue">0</div></div>
+    <div class="card"><div class="label">DCRLogErrors</div><div class="value red">2</div></div>
+    <div class="card"><div class="label">Intune 审计记录</div><div class="value amber">1</div></div>
+  </div>
+
+    <details class="section" id="failed-signins" open>
+    <summary><span>AAD / Managed Identity / Service Principal 登录失败</span></summary>
+    <p class="note">Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。相同 IP 的多次失败已合并。</p>
+    <pre class="kql-block"><code>union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| extend __ResultSignatureRaw = tostring(column_ifexists(&quot;ResultSignature&quot;, &quot;&quot;)), __ResultRaw = tostring(column_ifexists(&quot;Result&quot;, &quot;&quot;)), __ResultTypeRaw = tostring(column_ifexists(&quot;ResultType&quot;, &quot;&quot;)), __StatusRaw = tostring(column_ifexists(&quot;Status&quot;, &quot;&quot;)), __ResultDescriptionRaw = tostring(column_ifexists(&quot;ResultDescription&quot;, &quot;&quot;))
+| extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, &quot;&quot;)
+| extend ResultDescription = tostring(coalesce(column_ifexists(&quot;ResultDescription&quot;, &quot;&quot;), column_ifexists(&quot;FailureReason&quot;, &quot;&quot;), column_ifexists(&quot;Status&quot;, &quot;&quot;)))
+| extend __status = tolower(ResultType)
+| extend __isSuccess = __status in (&quot;true&quot;,&quot;success&quot;,&quot;succeeded&quot;,&quot;completed&quot;,&quot;complete&quot;,&quot;ok&quot;,&quot;pass&quot;,&quot;passed&quot;,&quot;0&quot;)
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or tolong(ResultType) &gt; 0 or tolower(ResultDescription) has_any (&quot;fail&quot;,&quot;failed&quot;,&quot;failure&quot;,&quot;denied&quot;,&quot;error&quot;,&quot;timeout&quot;)
+| where __isFailed
+| summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription</code></pre><p class="empty">未发现相关风险。</p>
+  </details>
+  <details class="section" id="identity-permission" open>
+    <summary><span>Service Principal 对象 / 权限成功变动</span></summary>
+    <p class="note">仅显示用户操作者触发的 Add/Remove/Hard delete service principal，以及 Add/Remove app role assignment to service principal；PIM 相关记录已排除。</p>
+    <pre class="kql-block"><code>AuditLogs
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| where isnotempty(InitiatedBy.user.userPrincipalName)
+| where not(OperationName has &quot;PIM&quot; or ActivityDisplayName has &quot;PIM&quot; or ResultReason has &quot;PIM activation expired&quot;)
+| extend __isSuccess = tolower(Result) in (&quot;true&quot;,&quot;success&quot;,&quot;succeeded&quot;,&quot;completed&quot;,&quot;complete&quot;,&quot;ok&quot;,&quot;pass&quot;,&quot;passed&quot;,&quot;0&quot;)
+| where __isSuccess and OperationName in~ (
+    &quot;Add service principal&quot;,
+    &quot;Remove service principal&quot;,
+    &quot;Hard delete service principal&quot;,
+    &quot;Add app role assignment to service principal&quot;,
+    &quot;Remove app role assignment from service principal&quot;
+)
+| summarize ActivityDateTime=max(todatetime(ActivityDateTime)), EventCount=count() by Actor, OperationName, Target, PermissionName</code></pre><div class="table-scroll"><table><thead><tr><th>Timestamp(ActivityDateTime)</th><th>Actor</th><th>Operation</th><th>Target</th><th>Permission</th></tr></thead><tbody><tr><td>2026-06-03 16:11:48</td><td>C250126@china.keyence.com.cn</td><td>Add app role assignment to service principal</td><td>Microsoft Rights Management Services</td><td>&quot;f51ad947-6c7b-4c2d-a7c0-96cd63ddb4b5&quot;</td></tr><tr><td>2026-06-03 16:11:48</td><td>C250126@china.keyence.com.cn</td><td>Add app role assignment to service principal</td><td>Microsoft Rights Management Services</td><td>&quot;938f5d5f-6281-4d00-a2e0-2ca9e9f70519&quot;</td></tr><tr><td>2026-06-03 16:11:48</td><td>C250126@china.keyence.com.cn</td><td>Add app role assignment to service principal</td><td>Microsoft Information Protection Sync Service</td><td>&quot;8b2071cd-015a-4025-8052-1c0dba2d3f64&quot;</td></tr><tr><td>2026-05-19 14:03:39</td><td>C250126@china.keyence.com.cn</td><td>Add service principal</td><td>M365CLI</td><td></td></tr><tr><td>2026-06-08 14:26:31</td><td>C250126@china.keyence.com.cn</td><td>Add service principal</td><td>opencode-auth-wrapper</td><td></td></tr><tr><td>2026-06-02 17:04:21</td><td>C250126@china.keyence.com.cn</td><td>Add service principal</td><td>AIPServer-SharonTest</td><td></td></tr><tr><td>2026-05-12 17:36:51</td><td>C250126@china.keyence.com.cn</td><td>Remove app role assignment from service principal</td><td>Microsoft Graph</td><td></td></tr><tr><td>2026-05-14 14:09:14</td><td>C250126@china.keyence.com.cn</td><td>Add app role assignment to service principal</td><td>Microsoft Graph</td><td>&quot;2c9a9828-2c18-40a7-8c85-87df7c143cab&quot;</td></tr><tr><td>2026-06-08 15:30:52</td><td>C250126@china.keyence.com.cn</td><td>Add app role assignment to service principal</td><td>Microsoft Graph</td><td>&quot;6cacf7bc-8298-4ec2-a3f4-f9a6d2342bc9&quot;</td></tr><tr><td>2026-05-12 17:31:22</td><td>C250126@china.keyence.com.cn</td><td>Remove app role assignment from service principal</td><td>Log Analytics API</td><td></td></tr><tr><td>2026-05-19 10:04:51</td><td>C250126@china.keyence.com.cn</td><td>Remove service principal</td><td>Alibaba Cloud CloudSSO</td><td></td></tr><tr><td>2026-05-12 17:24:06</td><td>C250126@china.keyence.com.cn</td><td>Remove service principal</td><td>IT-Management-tools</td><td></td></tr></tbody></table></div>
+  </details>
+  <details class="section" id="delete-disable" open>
+    <summary><span>删除 / Disable 操作</span></summary>
+    <p class="note">只统计 delete / remove / disable / deactivate 语义的操作；AuditLogs 已去掉目标字段，并按除时间外相同的记录合并。</p>
+    <pre class="kql-block"><code>union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| extend OperationText = strcat(column_ifexists(&quot;OperationName&quot;, &quot;&quot;), &quot; &quot;, column_ifexists(&quot;ActivityDisplayName&quot;, &quot;&quot;), &quot; &quot;, column_ifexists(&quot;Activity&quot;, &quot;&quot;), &quot; &quot;, column_ifexists(&quot;Operation&quot;, &quot;&quot;))
+| where tolower(OperationText) matches regex @&quot;(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)&quot;
+| summarize LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, Result, ResultDescription</code></pre><div class="table-scroll"><table><thead><tr><th>次数</th><th>最后时间</th><th>表</th><th>操作者</th><th>操作</th><th>结果/说明</th></tr></thead><tbody><tr><td>10</td><td>2026-06-09 15:54:05</td><td>AuditLogs</td><td>C250126@china.keyence.com.cn</td><td>Remove member from group</td><td></td></tr><tr><td>8</td><td>2026-05-28 18:14:59</td><td>AuditLogs</td><td>Office 365 SharePoint Online / leslie@china.keyence.com.cn</td><td>Remove owner from group</td><td></td></tr><tr><td>7</td><td>2026-05-28 18:14:51</td><td>AuditLogs</td><td>Office 365 SharePoint Online / leslie@china.keyence.com.cn</td><td>Remove member from group</td><td></td></tr><tr><td>6</td><td>2026-05-12 17:36:51</td><td>AuditLogs</td><td>C250126@china.keyence.com.cn</td><td>Remove app role assignment from service principal</td><td>service principal audit change</td></tr><tr><td>4</td><td>2026-05-19 14:00:31</td><td>AuditLogs</td><td>Microsoft Office 365 Portal / D9347@china.keyence.com.cn</td><td>Delete group</td><td></td></tr><tr><td>3</td><td>2026-05-21 17:37:25</td><td>AuditLogs</td><td>C250126@china.keyence.com.cn</td><td>Remove delegated permission grant</td><td></td></tr><tr><td>2</td><td>2026-05-19 10:04:51</td><td>AuditLogs</td><td>C250126@china.keyence.com.cn</td><td>Remove service principal</td><td>service principal audit change</td></tr><tr><td>2</td><td>2026-05-19 10:04:51</td><td>AuditLogs</td><td>C250126@china.keyence.com.cn</td><td>Delete application</td><td></td></tr><tr><td>1</td><td>2026-06-01 12:05:03</td><td>AuditLogs</td><td>Microsoft Office 365 Portal / C250126@china.keyence.com.cn</td><td>Delete group</td><td></td></tr></tbody></table></div>
+  </details>
+  <details class="section" id="suspicious-success" open>
+    <summary><span>可疑成功登录</span></summary>
+    <p class="note">关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。相同主体、应用、IP 已合并。</p>
+    <pre class="kql-block"><code>union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| extend __ResultSignatureRaw = tostring(column_ifexists(&quot;ResultSignature&quot;, &quot;&quot;)), __ResultRaw = tostring(column_ifexists(&quot;Result&quot;, &quot;&quot;)), __ResultTypeRaw = tostring(column_ifexists(&quot;ResultType&quot;, &quot;&quot;)), __StatusRaw = tostring(column_ifexists(&quot;Status&quot;, &quot;&quot;)), __ResultDescriptionRaw = tostring(column_ifexists(&quot;ResultDescription&quot;, &quot;&quot;))
+| extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, &quot;&quot;)
+| extend AppDisplayName = tostring(coalesce(column_ifexists(&quot;AppDisplayName&quot;, &quot;&quot;), column_ifexists(&quot;ServicePrincipalName&quot;, &quot;&quot;), column_ifexists(&quot;ManagedIdentityName&quot;, &quot;&quot;), &quot;Unknown&quot;))
+| extend IPAddress = tostring(coalesce(column_ifexists(&quot;IPAddress&quot;, &quot;&quot;), column_ifexists(&quot;IpAddress&quot;, &quot;&quot;), column_ifexists(&quot;ClientIP&quot;, &quot;&quot;), column_ifexists(&quot;ClientIpAddress&quot;, &quot;&quot;), &quot;&quot;))
+| extend __isSuccess = tolower(ResultType) in (&quot;true&quot;,&quot;success&quot;,&quot;succeeded&quot;,&quot;completed&quot;,&quot;complete&quot;,&quot;ok&quot;,&quot;pass&quot;,&quot;passed&quot;,&quot;0&quot;)
+| extend __ip = extract(@&quot;(?&lt;!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)&quot;, 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith &quot;10.&quot;) and not(__ip matches regex @&quot;^172\.(1[6-9]|2[0-9]|3[01])\.&quot;) and not(__ip startswith &quot;192.168.&quot;) and not(__ip startswith &quot;127.&quot;) and not(__ip startswith &quot;169.254.&quot;) and __ip != &quot;0.0.0.0&quot; and __ip != &quot;255.255.255.255&quot;
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
+| where __isSuccess and __isPublicIp and not(__isTrustedIp)
+| where TableName != &quot;SigninLogs&quot; or AppDisplayName !in~ (&quot;Windows Sign In&quot;, &quot;Microsoft Edge&quot;, &quot;Sangfor SASE VPN&quot;, &quot;Microsoft Office&quot;)
+| summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType</code></pre><p class="empty">未发现相关风险。</p>
+  </details>
+  <details class="section" id="suspicious-ip" open>
+    <summary><span>可疑 IP</span></summary>
+    <p class="note">仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，并已排除 Microsoft Service Tags 中的 4179 条 CIDR 规则。</p>
+    <pre class="kql-block"><code>SigninLogs
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| extend __ip = extract(@&quot;(?&lt;!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)&quot;, 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith &quot;10.&quot;) and not(__ip matches regex @&quot;^172\.(1[6-9]|2[0-9]|3[01])\.&quot;) and not(__ip startswith &quot;192.168.&quot;) and not(__ip startswith &quot;127.&quot;) and not(__ip startswith &quot;169.254.&quot;) and __ip != &quot;0.0.0.0&quot; and __ip != &quot;255.255.255.255&quot;
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
+| where __isPublicIp and not(__isTrustedIp)
+| summarize LastTime=max(TimeGenerated), EventCount=count() by IPAddress, AppDisplayName</code></pre><p class="empty">未发现相关风险。</p>
+  </details>
+  <details class="section" id="client-ip-rank">
+    <summary><span>客户端 IP 排行</span></summary>
+    <p class="note">此排行已排除所有出现在“可疑 IP”中的 IP。</p>
+    <pre class="kql-block"><code>处理逻辑：
+1. 从已参与报告的数据集中提取可用公网 Client IP。
+2. 排除“可疑 IP”栏目中已经出现的 IP，避免同一风险重复展示。
+3. 按出现次数倒序展示 Top 20。</code></pre><p class="empty">未发现相关风险。</p>
+  </details>
+  <details class="section" id="license" open>
+    <summary><span>License 使用量与剩余数量</span></summary>
+    <p class="note">License 使用量优先使用 AssignedLicensesDCR_CL；若日志缺少总量或剩余量，会尝试调用 Microsoft Graph subscribedSkus 获取，并支持按 servicePlans[].servicePlanName 映射。 License 总量已通过 Microsoft Graph subscribedSkus 获取。</p>
+    <pre class="kql-block"><code>AssignedLicensesDCR_CL
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| summarize UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus
+
+补充逻辑：
+当日志中的 TotalLicenses 缺失时，报告通过 Microsoft Graph subscribedSkus 获取总量/剩余量。</code></pre><div class="table-scroll"><table><thead><tr><th>License 名称</th><th>已使用</th><th>总数</th><th>剩余</th><th>来源</th></tr></thead><tbody><tr><td>EXCHANGE_S_ENTERPRISE</td><td>2</td><td>2</td><td>0</td><td>Graph</td></tr><tr><td>DYN365_CDS_O365_P2</td><td>1843</td><td>1950</td><td>107</td><td>Graph</td></tr><tr><td>FLOW_O365_S1</td><td>1843</td><td>1950</td><td>107</td><td>Graph</td></tr><tr><td>TEAMS_GALLATIN</td><td>1843</td><td>1950</td><td>107</td><td>Graph</td></tr></tbody></table></div>
+  </details>
+  <details class="section" id="mailbox-low-space" open>
+    <summary><span>邮箱容量风险</span></summary>
+    <p class="note">使用 MailboxStatisticsDCR_CL 的低可用空间 KQL 在查询端直接筛选异常邮箱。</p>
+    <pre class="kql-block"><code>MailboxStatisticsDCR_CL
+| where AvailableSpaceGB &lt; QuotaLimitGB * 0.05
+| extend UsagePercent = round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2)
+| project TimeGenerated, DisplayName, AvailableSpaceGB, QuotaLimitGB, UsagePercent</code></pre><p class="empty">未发现相关风险。</p>
+  </details>
+  <details class="section" id="shared-mailbox">
+    <summary><span>SharedMailbox</span></summary>
+    <p class="note">显示 MailboxStatisticsDCR_CL 中被 RecipientTypeDetails、MailboxType 或 IsSharedMailbox 字段标识为 SharedMailbox 的邮箱。</p>
+    <pre class="kql-block"><code>MailboxStatisticsDCR_CL
+| where RecipientTypeDetails contains &quot;Shared&quot; or MailboxType contains &quot;Shared&quot; or IsSharedMailbox in~ (&quot;true&quot;, &quot;1&quot;, &quot;yes&quot;, &quot;y&quot;)
+| project TimeGenerated, DisplayName, RecipientTypeDetails, AvailableSpaceGB, QuotaLimitGB</code></pre><p class="empty">未发现相关风险。</p>
+  </details>
+  <details class="section" id="dcr-log-errors" open>
+    <summary><span>DCRLogErrors</span></summary>
+    <p class="note">固定观察 DCRLogErrors 表，并按最近 30 天的 InputStreamId、OperationName、Message 去重展示。</p>
+    <pre class="kql-block"><code>DCRLogErrors
+| where TimeGenerated &gt; ago(30d)
+| distinct InputStreamId, OperationName, Message</code></pre><div class="table-scroll"><table><thead><tr><th>InputStreamId</th><th>OperationName</th><th>Message</th></tr></thead><tbody><tr><td>Custom-AuditGeneralDCR</td><td>Transformation</td><td>Received data is not a valid JSON array.</td></tr><tr><td>Custom-SharePointAuditDCR</td><td>Ingestion</td><td>Content-Length must be greater than zero.</td></tr></tbody></table></div>
+  </details>
+  <details class="section" id="intune-audit" open>
+    <summary><span>Intune 审计记录</span></summary>
+    <p class="note">显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。</p>
+    <pre class="kql-block"><code>IntuneAuditLogsDCR_CL
+| where TimeGenerated &gt;= datetime({StartUtc}) and TimeGenerated &lt; datetime({EndUtc})
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription</code></pre><div class="table-scroll"><table><thead><tr><th>次数</th><th>最后时间</th><th>Actor</th><th>Operation</th><th>Target</th><th>结果/说明</th></tr></thead><tbody><tr><td>1</td><td>2026-06-08 18:25:33</td><td>Unknown</td><td>remoteLock ManagedDevice</td><td></td><td></td></tr></tbody></table></div>
+  </details>
+  <details class="section" id="failed-ops">
+    <summary><span>其他失败/异常操作</span></summary>
+    <p class="note">登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录，并按相似内容合并。</p>
+    <pre class="kql-block"><code>处理逻辑：
+1. 各表查询端先筛选失败/异常、删除/Disable、消息追踪异常等风险记录。
+2. 报告端排除已经单独展示的登录失败、删除/Disable、DCRLogErrors、Intune 审计等栏目。
+3. 剩余失败/异常按 表 + 用户 + 操作 + 状态/原因 合并，只显示最后时间和次数。</code></pre><div class="table-scroll"><table><thead><tr><th>次数</th><th>最后时间</th><th>表</th><th>用户</th><th>操作</th><th>状态/原因</th></tr></thead><tbody><tr><td>55638</td><td>2026-06-11 06:57:37</td><td>AssignedLicensesDCR_CL</td><td>System</td><td>PendingInput | INTUNE_A</td><td></td></tr><tr><td>30</td><td>2026-06-11 06:57:37</td><td>AssignedLicensesDCR_CL</td><td>System</td><td>PendingInput | SHAREPOINTENTERPRISE</td><td></td></tr></tbody></table></div>
+  </details>
+  <details class="section" id="source-status">
+    <summary><span>数据源查询状态</span></summary>
+    <p class="note">显示本次参与生成合并报告的 CSV 数据源。</p>
+    <pre class="kql-block"><code>处理逻辑：
+1. main.ps1 按所选时间范围逐表调用 query-log-analytics.ps1 导出 CSV。
+2. 对 DCRLogErrors、MailboxStatisticsDCR_CL、IntuneAuditLogsDCR_CL 和登录相关表跳过表级缓存，确保使用当前查询逻辑。
+3. 本栏目只展示本次实际参与合并报告的 CSV 数据源、记录数和文件名。</code></pre><div class="table-scroll"><table><thead><tr><th>表</th><th>记录数</th><th>CSV</th></tr></thead><tbody><tr><td>AssignedLicensesDCR_CL</td><td>20</td><td>AssignedLicensesDCR_CL_202605121700_202606111700.csv</td></tr><tr><td>AuditLogs</td><td>22</td><td>AuditLogs_202605121700_202606111700.csv</td></tr><tr><td>DCRLogErrors</td><td>2</td><td>DCRLogErrors_202605121700_202606111700.csv</td></tr><tr><td>IntuneAuditLogsDCR_CL</td><td>1</td><td>IntuneAuditLogsDCR_CL_202605121700_202606111700.csv</td></tr></tbody></table></div>
+  </details>
+
+  <p class="small">Generated at 2026-06-11 17:07:13</p>
+</div>
+</div>
+</body>
+</html>

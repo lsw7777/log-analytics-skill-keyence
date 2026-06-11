@@ -233,20 +233,20 @@ function Get-TableAnalysisProfile {
     switch ($TableName) {
         'AADManagedIdentitySignInLogs' {
             $common.UserFields = @('ServicePrincipalName', 'Identity', 'ManagedIdentityName', 'AppDisplayName', 'ResourceIdentity', 'ServicePrincipalId', 'AppId') + $common.UserFields
-            $common.OperationFields = @('ResultType', 'ResultDescription', 'Status', 'ConditionalAccessStatus', 'OperationName', 'ActivityDisplayName') + $common.OperationFields
+            $common.OperationFields = @('ResultSignature', 'ResultType', 'ResultDescription', 'Status', 'ConditionalAccessStatus', 'OperationName', 'ActivityDisplayName') + $common.OperationFields
             $common.WorkloadFields = @('ResourceDisplayName', 'ResourceServicePrincipalId', 'ServicePrincipalName', 'AppDisplayName', 'Category') + $common.WorkloadFields
             $common.ClientIpFields = @('IPAddress', 'IpAddress', 'ClientIP', 'ClientIpAddress') + $common.ClientIpFields
-            $common.SuccessFields = @('ResultType', 'Status', 'ResultDescription') + $common.SuccessFields
+            $common.SuccessFields = @('ResultSignature', 'ResultType', 'Status', 'ResultDescription') + $common.SuccessFields
             $common.DefaultOperation = 'Managed Identity Sign-in'
             $common.DefaultWorkload = 'Microsoft Entra Managed Identity'
             $common.DefaultSuccess = 'unknown'
         }
         'AADServicePrincipalSignInLogs' {
             $common.UserFields = @('ServicePrincipalName', 'AppDisplayName', 'ServicePrincipalId', 'AppId', 'ResourceDisplayName') + $common.UserFields
-            $common.OperationFields = @('ServicePrincipalName', 'OperationName', 'ActivityDisplayName', 'ResultType', 'ResultDescription', 'Status', 'ConditionalAccessStatus') + $common.OperationFields
+            $common.OperationFields = @('ServicePrincipalName', 'OperationName', 'ActivityDisplayName', 'ResultSignature', 'ResultType', 'ResultDescription', 'Status', 'ConditionalAccessStatus') + $common.OperationFields
             $common.WorkloadFields = @('ResourceDisplayName', 'ResourceServicePrincipalId', 'AppDisplayName', 'Category') + $common.WorkloadFields
             $common.ClientIpFields = @('IPAddress', 'IpAddress', 'ClientIP', 'ClientIpAddress') + $common.ClientIpFields
-            $common.SuccessFields = @('ResultType', 'Status', 'ResultDescription') + $common.SuccessFields
+            $common.SuccessFields = @('ResultSignature', 'ResultType', 'Status', 'ResultDescription') + $common.SuccessFields
             $common.DefaultOperation = 'Service Principal Sign-in'
             $common.DefaultWorkload = 'Microsoft Entra Service Principal'
             $common.DefaultSuccess = 'unknown'
@@ -288,11 +288,11 @@ function Get-TableAnalysisProfile {
             $common.DefaultSuccess = 'false'
         }
         'IntuneAuditLogsDCR_CL' {
-            $common.UserFields = @('ActorUPN', 'ActorUserPrincipalName', 'Actor', 'InitiatedByUserPrincipalName', 'UserPrincipalName', 'UPN', 'UserId', 'Identity') + $common.UserFields
-            $common.OperationFields = @('OperationName', 'ActivityDisplayName', 'Activity', 'Operation', 'Action', 'AuditEventType') + $common.OperationFields
+            $common.UserFields = @('ActorUPN', 'ActorUPN_s', 'ActorUserPrincipalName', 'ActorUserPrincipalName_s', 'Actor', 'Actor_s', 'InitiatedByUserPrincipalName', 'InitiatedByUserPrincipalName_s', 'UserPrincipalName', 'UserPrincipalName_s', 'UPN', 'UPN_s', 'UserId', 'UserId_s', 'Identity', 'Identity_s') + $common.UserFields
+            $common.OperationFields = @('OperationName', 'OperationName_s', 'ActivityDisplayName', 'ActivityDisplayName_s', 'Activity', 'Activity_s', 'Operation', 'Operation_s', 'Action', 'Action_s', 'AuditEventType', 'AuditEventType_s') + $common.OperationFields
             $common.WorkloadFields = @('Workload', 'Category', 'Service', 'SourceSystem') + $common.WorkloadFields
             $common.ClientIpFields = @('IPAddress', 'IpAddress', 'ClientIP', 'ClientIpAddress') + $common.ClientIpFields
-            $common.SuccessFields = @('Result', 'ResultStatus', 'Status', 'ActivityResult', 'OperationStatus') + $common.SuccessFields
+            $common.SuccessFields = @('Result', 'Result_s', 'ResultStatus', 'ResultStatus_s', 'Status', 'Status_s', 'ActivityResult', 'ActivityResult_s', 'OperationStatus', 'OperationStatus_s') + $common.SuccessFields
             $common.DefaultUser = 'Intune'
             $common.DefaultOperation = 'Intune Audit Event'
             $common.DefaultWorkload = 'Intune'
@@ -324,10 +324,10 @@ function Get-TableAnalysisProfile {
         }
         'SigninLogs' {
             $common.UserFields = @('UserPrincipalName', 'UserDisplayName', 'Identity', 'UserId', 'User') + $common.UserFields
-            $common.OperationFields = @('AppDisplayName', 'ResultType', 'ResultDescription', 'Status', 'ConditionalAccessStatus') + $common.OperationFields
-            $common.WorkloadFields = @('AppDisplayName', 'ResourceDisplayName', 'ClientAppUsed', 'Category') + $common.WorkloadFields
+            $common.OperationFields = @('AppDisplayName', 'ServicePrincipalName', 'ResultSignature', 'ResultType', 'ResultDescription', 'Status', 'ConditionalAccessStatus') + $common.OperationFields
+            $common.WorkloadFields = @('AppDisplayName', 'ServicePrincipalName', 'ResourceDisplayName', 'ClientAppUsed', 'Category') + $common.WorkloadFields
             $common.ClientIpFields = @('IPAddress', 'IpAddress', 'ClientIP', 'ClientIpAddress') + $common.ClientIpFields
-            $common.SuccessFields = @('ResultType', 'Status', 'ResultDescription') + $common.SuccessFields
+            $common.SuccessFields = @('ResultSignature', 'ResultType', 'Status', 'ResultDescription') + $common.SuccessFields
             $common.DefaultOperation = 'User Sign-in'
             $common.DefaultWorkload = 'Microsoft Entra Sign-in'
             $common.DefaultSuccess = 'unknown'
@@ -367,9 +367,78 @@ function Get-FieldValue {
     return $Default
 }
 
+function Join-DisplayIdentityValue {
+    param(
+        [string]$DisplayName,
+        [string]$Identity
+    )
+
+    $display = if ($DisplayName) { $DisplayName.Trim() } else { '' }
+    $id = if ($Identity) { $Identity.Trim() } else { '' }
+    if (-not $display) { return $id }
+    if (-not $id) { return $display }
+    if ($display -eq $id -or $display.Contains($id)) { return $display }
+    if ($display -match '@' -and $id -notmatch '@') { return "$id / $display" }
+    return "$display / $id"
+}
+
+function Get-InitiatedByUserIdentity {
+    param([object]$Row)
+
+    if ($Row.PSObject.Properties.Name -notcontains 'InitiatedBy') { return '' }
+    $raw = [string]$Row.InitiatedBy
+    if ([string]::IsNullOrWhiteSpace($raw)) { return '' }
+    try {
+        $json = $raw | ConvertFrom-Json
+        if ($json.user) {
+            return Join-DisplayIdentityValue -DisplayName ([string]$json.user.displayName) -Identity ([string]$json.user.userPrincipalName)
+        }
+    } catch {
+    }
+    return ''
+}
+
+function Get-DisplayIdentityValue {
+    param(
+        [object]$Row,
+        [string[]]$DisplayFields,
+        [string[]]$IdentityFields
+    )
+
+    $display = Get-FieldValue -Row $Row -Names $DisplayFields -Default ''
+    $identity = Get-FieldValue -Row $Row -Names $IdentityFields -Default ''
+    return Join-DisplayIdentityValue -DisplayName $display -Identity $identity
+}
+
 function Get-UserValue {
     param([object]$Row, [string]$TableName)
     $profile = Get-TableAnalysisProfile -TableName $TableName
+
+    switch ($TableName) {
+        'AuditLogs' {
+            $actor = Get-FieldValue -Row $Row -Names @('Actor') -Default ''
+            if ($actor -and $actor -match '\s/\s|@') {
+                if ($actor -match '\s/\s') { return $actor }
+            }
+            $fromInitiatedBy = Get-InitiatedByUserIdentity -Row $Row
+            if ($fromInitiatedBy) { return $fromInitiatedBy }
+            $combined = Get-DisplayIdentityValue -Row $Row -DisplayFields @('ActorDisplayName', 'InitiatedByUserDisplayName', 'UserDisplayName', 'DisplayName', 'Identity') -IdentityFields @('ActorUserPrincipalName', 'InitiatedByUserPrincipalName', 'UserPrincipalName', 'UserUPN', 'UPN', 'UserId')
+            if ($combined) { return $combined }
+        }
+        'SigninLogs' {
+            $combined = Get-DisplayIdentityValue -Row $Row -DisplayFields @('UserDisplayName', 'DisplayName') -IdentityFields @('UserPrincipalName', 'Identity', 'User', 'UserId')
+            if ($combined) { return $combined }
+        }
+        'IntuneAuditLogsDCR_CL' {
+            $combined = Get-DisplayIdentityValue -Row $Row -DisplayFields @('ActorDisplayName', 'ActorDisplayName_s', 'DisplayName', 'DisplayName_s') -IdentityFields @('ActorUPN', 'ActorUPN_s', 'ActorUserPrincipalName', 'ActorUserPrincipalName_s', 'InitiatedByUserPrincipalName', 'InitiatedByUserPrincipalName_s', 'UserPrincipalName', 'UserPrincipalName_s', 'UPN', 'UPN_s', 'UserId', 'UserId_s', 'Actor', 'Actor_s')
+            if ($combined) { return $combined }
+        }
+        'AuditGeneralDCR_CL' {
+            $combined = Get-DisplayIdentityValue -Row $Row -DisplayFields @('ActorDisplayName', 'UserDisplayName', 'DisplayName', 'Actor') -IdentityFields @('ActorUserPrincipalName', 'UserPrincipalName', 'UserUPN', 'UPN', 'UserId')
+            if ($combined) { return $combined }
+        }
+    }
+
     return Get-FieldValue -Row $Row -Names $profile.UserFields -Default $profile.DefaultUser
 }
 
@@ -422,6 +491,7 @@ function Get-SuccessValue {
     if ($value -match '^(true|success|succeeded|delivered|expanded|completed|complete|ok|pass|passed|0)$') { return 'true' }
     if ($value -match '^(false|fail|failed|failure|undelivered|blocked|rejected|denied|error|timeout|quarantined|1)$') { return 'false' }
     if ($value -match '^\d+$' -and [int]$value -ne 0) { return 'false' }
+    if ($TableName -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs') -and -not [string]::IsNullOrWhiteSpace($value) -and $value -ne 'unknown') { return 'false' }
     if ($profile.DefaultSuccess -eq 'true') { return 'true' }
     return 'unknown'
 }
@@ -514,8 +584,8 @@ function Update-MicrosoftServiceTagsCache {
     }
 
     $downloadPages = @(
-        'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519',
-        'https://www.microsoft.com/en-us/download/confirmation.aspx?id=57062'
+        'https://www.microsoft.com/en-us/download/confirmation.aspx?id=57062',
+        'https://www.microsoft.com/en-us/download/confirmation.aspx?id=56519'
     )
 
     foreach ($page in $downloadPages) {
@@ -538,7 +608,7 @@ function Get-MicrosoftServiceTagCidrs {
     param(
         [string]$CachePath = (Get-MicrosoftServiceTagsCachePath),
         [switch]$Refresh,
-        [string]$TagNamePattern = '^(AzureActiveDirectory|AzureFrontDoor\.(Frontend|FirstParty|MicrosoftSecurity|Backend)|MicrosoftCloudAppSecurity(\.|$)|MicrosoftDefenderForEndpoint(\.|$)|PowerBI(\.|$)|AzurePortal|AzureResourceManager|AzureTrafficManager)$'
+        [string]$TagNamePattern = '^(AzureActiveDirectory(\.|$)|AzureFrontDoor\.(Frontend|FirstParty|MicrosoftSecurity|Backend)|MicrosoftCloudAppSecurity(\.|$)|MicrosoftDefenderForEndpoint(\.|$)|PowerBI(\.|$)|AzurePortal|AzureResourceManager(\.|$)|AzureTrafficManager)$'
     )
 
     if (-not $Refresh -and $script:MicrosoftServiceTagCidrsCache) {
@@ -742,9 +812,11 @@ function Get-LogRiskFilterKql {
 | extend __availableText = tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", "")))
 | extend __quotaText = tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", "")))
 | extend __available = todouble(extract(@"-?\d+(\.\d+)?", 0, __availableText)), __quota = todouble(extract(@"-?\d+(\.\d+)?", 0, __quotaText))
-| extend __mailboxType = tolower(tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""))))
-| where (__quota > 0 and __available / __quota < 0.05) or __mailboxType contains "shared"
-| project-away __availableText, __quotaText, __available, __quota, __mailboxType
+| extend __mailboxTypeText = strcat(" ", tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("RecipientTypeDetail", ""), column_ifexists("RecipientTypeDetails_s", ""), column_ifexists("MailboxRecipientType", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""), "")), " ", tostring(coalesce(column_ifexists("IsSharedMailbox", ""), column_ifexists("IsSharedMailBox", ""), column_ifexists("IsShared", ""), column_ifexists("SharedMailbox", ""), column_ifexists("SharedMailBox", ""), "")))
+| extend __isLowSpace = (__quota > 0 and __available < __quota * 0.05)
+| extend __isSharedMailbox = tolower(__mailboxTypeText) contains "shared"
+| where __isLowSpace or __isSharedMailbox
+| project-away __availableText, __quotaText, __available, __quota, __mailboxTypeText, __isLowSpace, __isSharedMailbox
 "@
     }
 
@@ -760,7 +832,7 @@ function Get-LogRiskFilterKql {
 | extend __isFailed = (__status in ("false","fail","failed","failure","undelivered","blocked","rejected","denied","error","timeout","quarantined","1") or (__status matches regex @"^\d+$" and toint(__status) != 0))
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
 | extend __isDeleteDisable = tolower(__op) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| extend __isPublicUntrustedIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255" and not(ipv4_is_in_any_range(__ip, $trustedIps))
+| extend __isPublicUntrustedIp = ("$TableName" == "SigninLogs" and isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255" and not(ipv4_is_in_any_range(__ip, $trustedIps)))
 | extend __isSigninSuspiciousSuccess = ("$TableName" == "SigninLogs" and __status in ("true","success","succeeded","0") and __isPublicUntrustedIp and not(__app in ($appAllowList)))
 | extend __isMessageTraceCritical = ("$TableName" == "MessageTraceDataDCR_CL" and __permissionText matches regex @"(?i)\b(fail(ed|ure)?|blocked|quarantined|reject(ed)?|undeliver(ed|able)?|error|timeout|bounced)\b")
 | extend __isMessageTraceBusiness = ("$TableName" == "MessageTraceDataDCR_CL" and __permissionText matches regex @"(?i)\b(Power\s*BI|PBI|SkyGuard)\b" and __permissionText matches regex @"(?i)\b(fail(ed|ure)?|blocked|quarantined|reject(ed)?|undeliver(ed|able)?|error|timeout|bounced)\b")
@@ -779,26 +851,16 @@ function New-AssignedLicensesOptimizedQuery {
     )
 
     return @"
-let __base =
 $TableName
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
 | extend UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("UserUPN", ""), column_ifexists("UPN", ""), column_ifexists("Mail", ""), column_ifexists("EmailAddress", ""), column_ifexists("DisplayName", ""), column_ifexists("UserId", "")))
 | extend SkuPartNumber = tostring(coalesce(column_ifexists("SkuPartNumber", ""), column_ifexists("LicenseName", ""), column_ifexists("SkuDisplayName", ""), column_ifexists("ServicePlanName", ""), column_ifexists("AssignedLicenses", ""), column_ifexists("Licenses", ""), "Unknown License"))
 | extend ServicePlanName = tostring(coalesce(column_ifexists("ServicePlanName", ""), column_ifexists("LicenseName", ""), column_ifexists("SkuPartNumber", "")))
 | extend LicenseName = tostring(coalesce(column_ifexists("LicenseName", ""), column_ifexists("SkuPartNumber", ""), column_ifexists("ServicePlanName", "")))
-| extend ProvisioningStatus = tostring(coalesce(column_ifexists("ProvisioningStatus", ""), column_ifexists("Status", "")))
-| extend TotalLicenses = todouble(tostring(coalesce(column_ifexists("TotalLicenses", ""), column_ifexists("TotalUnits", ""), column_ifexists("PrepaidUnitsEnabled", ""), column_ifexists("SkuPrepaidUnitsEnabled", ""), column_ifexists("EnabledUnits", ""), column_ifexists("Enabled", ""))));
-let __summary =
-__base
-| summarize TimeGenerated=max(TimeGenerated), UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber
-| extend UserPrincipalName="", ServicePlanName=SkuPartNumber, LicenseName=SkuPartNumber, ProvisioningStatus="Success", __RecordKind="LicenseSummary";
-let __failures =
-__base
-| where isnotempty(ProvisioningStatus) and tolower(ProvisioningStatus) != "success"
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), TotalLicenses=max(TotalLicenses) by UserPrincipalName, SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus
-| extend UsedUsers=long(null), __RecordKind="LicenseFailure";
-__summary
-| union isfuzzy=true __failures
+| extend ProvisioningStatus = tostring(coalesce(column_ifexists("ProvisioningStatus", ""), column_ifexists("Status", ""), "Success"))
+| extend TotalLicenses = todouble(tostring(coalesce(column_ifexists("TotalLicenses", ""), column_ifexists("TotalUnits", ""), column_ifexists("PrepaidUnitsEnabled", ""), column_ifexists("SkuPrepaidUnitsEnabled", ""), column_ifexists("EnabledUnits", ""), column_ifexists("Enabled", ""))))
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus
+| extend UserPrincipalName="", __RecordKind="LicenseSummary"
 | project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus, TotalLicenses, UsedUsers, __RecordKind
 "@
 }
@@ -810,38 +872,35 @@ function New-AadIdentitySigninOptimizedQuery {
         [string]$EndUtc
     )
 
+    $failedThresholdClause = if ($TableName -eq 'AADServicePrincipalSignInLogs') { '| where __RecordKind != "AggregatedFailedSignin" or EventCount > 10' } else { '' }
     $trustedIps = Get-TrustedIpKqlDynamicLiteral
-    $failedThresholdClause = if ($TableName -eq 'AADServicePrincipalSignInLogs') { '| where EventCount > 10' } else { '' }
 
     return @"
-let __base =
 $TableName
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend ServicePrincipalName = tostring(coalesce(column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), column_ifexists("Identity", ""), column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalId", ""), column_ifexists("AppId", ""), "Unknown"))
+| extend __ServicePrincipalNameRaw = tostring(column_ifexists("ServicePrincipalName", "")), __ManagedIdentityNameRaw = tostring(column_ifexists("ManagedIdentityName", "")), __IdentityRaw = tostring(column_ifexists("Identity", "")), __AppDisplayNameRaw = tostring(column_ifexists("AppDisplayName", "")), __ServicePrincipalIdRaw = tostring(column_ifexists("ServicePrincipalId", "")), __AppIdRaw = tostring(column_ifexists("AppId", ""))
+| extend ServicePrincipalName = case(isnotempty(__ServicePrincipalNameRaw), __ServicePrincipalNameRaw, isnotempty(__ManagedIdentityNameRaw), __ManagedIdentityNameRaw, isnotempty(__IdentityRaw), __IdentityRaw, isnotempty(__AppDisplayNameRaw), __AppDisplayNameRaw, isnotempty(__ServicePrincipalIdRaw), __ServicePrincipalIdRaw, isnotempty(__AppIdRaw), __AppIdRaw, "Unknown")
 | extend UserPrincipalName = ServicePrincipalName
-| extend ResourceDisplayName = tostring(coalesce(column_ifexists("ResourceDisplayName", ""), column_ifexists("ResourceIdentity", ""), column_ifexists("ResourceServicePrincipalId", ""), ""))
+| extend __ResourceDisplayNameRaw = tostring(column_ifexists("ResourceDisplayName", "")), __ResourceIdentityRaw = tostring(column_ifexists("ResourceIdentity", "")), __ResourceServicePrincipalIdRaw = tostring(column_ifexists("ResourceServicePrincipalId", ""))
+| extend ResourceDisplayName = case(isnotempty(__ResourceDisplayNameRaw), __ResourceDisplayNameRaw, isnotempty(__ResourceIdentityRaw), __ResourceIdentityRaw, isnotempty(__ResourceServicePrincipalIdRaw), __ResourceServicePrincipalIdRaw, "")
 | extend AppDisplayName = ServicePrincipalName
-| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
-| extend ResultType = tostring(coalesce(column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ResultDescription", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", ""), column_ifexists("ConditionalAccessStatus", ""), ""))
+| extend __IPAddressRaw = tostring(column_ifexists("IPAddress", "")), __IpAddressRaw = tostring(column_ifexists("IpAddress", "")), __ClientIPRaw = tostring(column_ifexists("ClientIP", "")), __ClientIpAddressRaw = tostring(column_ifexists("ClientIpAddress", ""))
+| extend IPAddress = case(isnotempty(__IPAddressRaw), __IPAddressRaw, isnotempty(__IpAddressRaw), __IpAddressRaw, isnotempty(__ClientIPRaw), __ClientIPRaw, isnotempty(__ClientIpAddressRaw), __ClientIpAddressRaw, "")
+| extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", "")), __FailureReasonRaw = tostring(column_ifexists("FailureReason", "")), __ConditionalAccessStatusRaw = tostring(column_ifexists("ConditionalAccessStatus", ""))
+| extend ResultSignature = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, "")
+| extend ResultType = case(isnotempty(ResultSignature), ResultSignature, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
+| extend ResultDescription = case(isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, isnotempty(__FailureReasonRaw), __FailureReasonRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ConditionalAccessStatusRaw), __ConditionalAccessStatusRaw, "")
 | extend __status = tolower(ResultType)
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
-| extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
+| extend __resultCode = tolong(ResultType)
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isPublicUntrustedIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255" and not(ipv4_is_in_any_range(__ip, $trustedIps));
-let __failed =
-__base
-| where __isFailed
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIps)
+| where __isFailed or (__isSuccess and __isPublicIp and not(__isTrustedIp))
+| extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultDescription=take_any(ResultDescription) by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, IPAddress, ResultType, __RecordKind
 $failedThresholdClause
-| extend __RecordKind="AggregatedFailedSignin";
-let __suspicious =
-__base
-| where __isSuccess and __isPublicUntrustedIp
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultType=take_any(ResultType), ResultDescription=take_any(ResultDescription) by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, IPAddress
-| extend __RecordKind="AggregatedSuspiciousSigninSuccess";
-__failed
-| union isfuzzy=true __suspicious
 | extend OperationName=ServicePrincipalName, Status=ResultType
 | project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, __RecordKind
 "@
@@ -856,34 +915,33 @@ function New-SigninLogsOptimizedQuery {
     $trustedIps = Get-TrustedIpKqlDynamicLiteral
 
     return @"
-let __base =
 SigninLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("UserDisplayName", ""), column_ifexists("Identity", ""), column_ifexists("UserId", ""), column_ifexists("User", ""), "Unknown"))
-| extend AppDisplayName = tostring(coalesce(column_ifexists("AppDisplayName", ""), column_ifexists("Application", ""), column_ifexists("ApplicationDisplayName", ""), column_ifexists("ClientAppUsed", ""), "Unknown"))
-| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
-| extend ResultType = tostring(coalesce(column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ResultDescription", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", ""), ""))
+| extend __UserDisplayNameRaw = tostring(column_ifexists("UserDisplayName", "")), __DisplayNameRaw = tostring(column_ifexists("DisplayName", ""))
+| extend UserDisplayName = case(isnotempty(__UserDisplayNameRaw), __UserDisplayNameRaw, isnotempty(__DisplayNameRaw), __DisplayNameRaw, "")
+| extend __UserPrincipalNameRaw = tostring(column_ifexists("UserPrincipalName", "")), __UserUPNRaw = tostring(column_ifexists("UserUPN", "")), __UPNRaw = tostring(column_ifexists("UPN", "")), __MailRaw = tostring(column_ifexists("Mail", "")), __EmailAddressRaw = tostring(column_ifexists("EmailAddress", "")), __IdentityRaw = tostring(column_ifexists("Identity", "")), __UserIdRaw = tostring(column_ifexists("UserId", "")), __UserRaw = tostring(column_ifexists("User", ""))
+| extend UserPrincipalName = case(isnotempty(__UserPrincipalNameRaw), __UserPrincipalNameRaw, isnotempty(__UserUPNRaw), __UserUPNRaw, isnotempty(__UPNRaw), __UPNRaw, isnotempty(__MailRaw), __MailRaw, isnotempty(__EmailAddressRaw), __EmailAddressRaw, isnotempty(__IdentityRaw), __IdentityRaw, isnotempty(__UserIdRaw), __UserIdRaw, isnotempty(__UserRaw), __UserRaw, isnotempty(UserDisplayName), UserDisplayName, "Unknown")
+| extend __AppDisplayNameRaw = tostring(column_ifexists("AppDisplayName", "")), __ServicePrincipalNameRaw = tostring(column_ifexists("ServicePrincipalName", "")), __ApplicationRaw = tostring(column_ifexists("Application", "")), __ApplicationDisplayNameRaw = tostring(column_ifexists("ApplicationDisplayName", "")), __ClientAppUsedRaw = tostring(column_ifexists("ClientAppUsed", ""))
+| extend AppDisplayName = case(isnotempty(__AppDisplayNameRaw), __AppDisplayNameRaw, isnotempty(__ServicePrincipalNameRaw), __ServicePrincipalNameRaw, isnotempty(__ApplicationRaw), __ApplicationRaw, isnotempty(__ApplicationDisplayNameRaw), __ApplicationDisplayNameRaw, isnotempty(__ClientAppUsedRaw), __ClientAppUsedRaw, "Unknown")
+| extend __IPAddressRaw = tostring(column_ifexists("IPAddress", "")), __IpAddressRaw = tostring(column_ifexists("IpAddress", "")), __ClientIPRaw = tostring(column_ifexists("ClientIP", "")), __ClientIpAddressRaw = tostring(column_ifexists("ClientIpAddress", ""))
+| extend IPAddress = case(isnotempty(__IPAddressRaw), __IPAddressRaw, isnotempty(__IpAddressRaw), __IpAddressRaw, isnotempty(__ClientIPRaw), __ClientIPRaw, isnotempty(__ClientIpAddressRaw), __ClientIpAddressRaw, "")
+| extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", "")), __FailureReasonRaw = tostring(column_ifexists("FailureReason", ""))
+| extend ResultSignature = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, "")
+| extend ResultType = case(isnotempty(ResultSignature), ResultSignature, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
+| extend ResultDescription = case(isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, isnotempty(__FailureReasonRaw), __FailureReasonRaw, isnotempty(__StatusRaw), __StatusRaw, "")
 | extend __status = tolower(ResultType)
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
-| extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
+| extend __resultCode = tolong(ResultType)
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isPublicUntrustedIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255" and not(ipv4_is_in_any_range(__ip, $trustedIps))
-| extend __isSigninSuspiciousSuccess = (__isSuccess and __isPublicUntrustedIp and not(AppDisplayName in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")));
-let __failed =
-__base
-| where __isFailed
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription
-| extend __RecordKind="AggregatedFailedSignin";
-let __suspicious =
-__base
-| where __isSigninSuspiciousSuccess
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultType=take_any(ResultType), ResultDescription=take_any(ResultDescription) by UserPrincipalName, AppDisplayName, IPAddress
-| extend __RecordKind="AggregatedSuspiciousSigninSuccess";
-__failed
-| union isfuzzy=true __suspicious
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIps)
+| extend __isSigninSuspiciousSuccess = (__isSuccess and __isPublicIp and not(__isTrustedIp) and AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office"))
+| where __isFailed or __isSigninSuspiciousSuccess
+| extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultDescription=take_any(ResultDescription) by UserPrincipalName, UserDisplayName, AppDisplayName, IPAddress, ResultType, __RecordKind
 | extend OperationName=AppDisplayName, Status=ResultType
-| project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, UserDisplayName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, __RecordKind
 "@
 }
 
@@ -897,7 +955,10 @@ function New-AuditActivityOptimizedQuery {
     return @"
 $TableName
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
+| extend UserDisplayName = tostring(coalesce(column_ifexists("UserDisplayName", ""), column_ifexists("ActorDisplayName", ""), column_ifexists("DisplayName", ""), ""))
 | extend UserUPN = tostring(coalesce(column_ifexists("UserUPN", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("Actor", ""), column_ifexists("UserId", ""), "Unknown"))
+| extend ActorDisplayName = UserDisplayName
+| extend ActorUserPrincipalName = UserUPN
 | extend UserId = tostring(coalesce(column_ifexists("UserId", ""), column_ifexists("ActorId", ""), column_ifexists("UserUPN", ""), column_ifexists("UserPrincipalName", ""), "Unknown"))
 | extend Activity = tostring(coalesce(column_ifexists("Activity", ""), column_ifexists("Operation", ""), column_ifexists("OperationName", ""), column_ifexists("EventName", ""), "Unknown"))
 | extend Operation = tostring(coalesce(column_ifexists("Operation", ""), column_ifexists("Activity", ""), column_ifexists("OperationName", ""), column_ifexists("EventName", ""), "Unknown"))
@@ -912,8 +973,8 @@ $TableName
 | extend __isDeleteDisable = tolower(__op) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
 | where __isFailed or __isDeleteDisable
 | extend __RecordKind = iff(__isDeleteDisable, "AggregatedDeleteDisable", "AggregatedFailedOperation")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserUPN, UserId, Activity, Operation, Workload, ClientIP, IsSuccess, ResultStatus, ResultDescription, __RecordKind
-| project TimeGenerated, FirstTime, LastTime, EventCount, UserUPN, UserId, Activity, Operation, Workload, ClientIP, IsSuccess, ResultStatus, ResultDescription, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserUPN, UserDisplayName, ActorDisplayName, ActorUserPrincipalName, UserId, Activity, Operation, Workload, ClientIP, IsSuccess, ResultStatus, ResultDescription, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, UserUPN, UserDisplayName, ActorDisplayName, ActorUserPrincipalName, UserId, Activity, Operation, Workload, ClientIP, IsSuccess, ResultStatus, ResultDescription, __RecordKind
 "@
 }
 
@@ -926,34 +987,29 @@ function New-AuditLogsOptimizedQuery {
     return @"
 AuditLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend __initiated = tostring(column_ifexists("InitiatedBy", ""))
-| extend __actorUpn = tostring(coalesce(column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("UserPrincipalName", ""), extract(@"""userPrincipalName""\s*:\s*""([^""]+)""", 1, __initiated), ""))
-| extend __actorName = tostring(coalesce(column_ifexists("Actor", ""), column_ifexists("Identity", ""), extract(@"""displayName""\s*:\s*""([^""]+)""", 1, __initiated), ""))
-| extend Actor = iff(isnotempty(__actorName) and isnotempty(__actorUpn) and not(__actorName contains __actorUpn), strcat(__actorName, " / ", __actorUpn), iff(isnotempty(__actorUpn), __actorUpn, __actorName))
+| extend __actorUpn = tostring(InitiatedBy.user.userPrincipalName)
+| extend __actorName = tostring(InitiatedBy.user.displayName)
+| extend Actor = iff(isnotempty(__actorName), strcat(__actorName, " / ", __actorUpn), __actorUpn)
 | extend UserPrincipalName = Actor
-| extend __actorIsUser = isnotempty(__actorUpn) or Actor contains "@" or __initiated contains @"""user"""
-| where __actorIsUser and isnotempty(Actor)
-| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("Activity", ""), column_ifexists("Operation", ""), column_ifexists("Category", ""), "Audit Log Event"))
-| extend ActivityDisplayName = tostring(coalesce(column_ifexists("ActivityDisplayName", ""), OperationName))
-| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ActivityStatus", ""), ""))
-| extend ResultReason = tostring(coalesce(column_ifexists("ResultReason", ""), column_ifexists("FailureReason", ""), ""))
+| where isnotempty(__actorUpn)
+| extend OperationName = tostring(OperationName)
+| extend ActivityDisplayName = tostring(ActivityDisplayName)
+| extend Result = tostring(Result)
+| extend ResultReason = tostring(ResultReason)
 | extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), ResultReason, ""))
-| extend __targetResources = tostring(column_ifexists("TargetResources", ""))
-| extend __modifiedProperties = tostring(column_ifexists("ModifiedProperties", ""))
-| extend __permissionText = strcat(OperationName, " ", __targetResources, " ", __modifiedProperties, " ", ResultDescription, " ", ActivityDisplayName)
-| extend __pimText = strcat(OperationName, " ", ActivityDisplayName, " ", ResultReason, " ", ResultDescription, " ", __targetResources, " ", __modifiedProperties)
-| where __pimText !matches regex @"(?i)\bPIM\b|PIM activation expired"
+| where not(OperationName has "PIM" or ActivityDisplayName has "PIM" or ResultReason has "PIM activation expired" or ResultDescription has "PIM activation expired")
 | extend __status = tolower(Result)
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isDeleteDisable = tolower(OperationName) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| extend __isSpObjectChange = __isSuccess and OperationName in~ ("Add service principal", "Remove service principal", "Hard delete service principal")
+| extend __operationLower = tolower(OperationName)
+| extend __isDeleteDisable = (__operationLower has "delete" or __operationLower has "remove" or __operationLower has "disable" or __operationLower has "deactivate")
+| extend __isServicePrincipalAudit = __isSuccess and OperationName in~ ("Add service principal", "Remove service principal", "Hard delete service principal", "Add app role assignment to service principal", "Remove app role assignment from service principal")
 | extend __isSpAppRoleChange = __isSuccess and OperationName in~ ("Add app role assignment to service principal", "Remove app role assignment from service principal")
-| extend Target = tostring(coalesce(column_ifexists("Target", ""), column_ifexists("TargetDisplayName", ""), extract(@"""displayName""\s*:\s*""([^""]+)""", 1, __targetResources), extract(@"""userPrincipalName""\s*:\s*""([^""]+)""", 1, __targetResources), extract(@"""id""\s*:\s*""([^""]+)""", 1, __targetResources), "Unknown"))
-| extend PermissionName = iff(__isSpAppRoleChange, tostring(coalesce(column_ifexists("PermissionName", ""), column_ifexists("AppRoleDisplayName", ""), extract(@"""permission""\s*:\s*""([^""]+)""", 1, __modifiedProperties), extract(@"""displayName""\s*:\s*""([^""]+)""", 1, __modifiedProperties), extract(@"""value""\s*:\s*""([^""]+)""", 1, __modifiedProperties), "")), "")
-| where __isDeleteDisable or __isSpObjectChange or __isSpAppRoleChange
-| extend ResultDescription = iff((__isSpObjectChange or __isSpAppRoleChange) and isempty(ResultDescription), "service principal audit change", ResultDescription)
-| extend __RecordKind = iff(__isSpObjectChange or __isSpAppRoleChange, "AggregatedServicePrincipalAudit", "AggregatedDeleteDisable")
-| extend ActivityDateTime = iff(isnotempty(tostring(column_ifexists("ActivityDateTime", ""))), tostring(column_ifexists("ActivityDateTime", "")), tostring(TimeGenerated))
+| where __isDeleteDisable or __isServicePrincipalAudit
+| extend Target = tostring(TargetResources[0].displayName)
+| extend PermissionName = iff(__isSpAppRoleChange, tostring(TargetResources[0].modifiedProperties[0].newValue), "")
+| extend ResultDescription = iff(__isServicePrincipalAudit and isempty(ResultDescription), "service principal audit change", ResultDescription)
+| extend __RecordKind = iff(__isServicePrincipalAudit, "AggregatedServicePrincipalAudit", "AggregatedDeleteDisable")
+| extend ActivityDateTime = iff(isnotempty(tostring(ActivityDateTime)), tostring(ActivityDateTime), tostring(TimeGenerated))
 | summarize TimeGenerated=max(TimeGenerated), ActivityDateTime=max(todatetime(ActivityDateTime)), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, Target, PermissionName, Result, ResultReason, ResultDescription, __RecordKind
 | project TimeGenerated, ActivityDateTime, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, Target, PermissionName, Result, ResultReason, ResultDescription, __RecordKind
 "@
@@ -1015,12 +1071,10 @@ function New-DcrLogErrorsOptimizedQuery {
     return @"
 DCRLogErrors
 | where TimeGenerated > ago(30d)
-| extend InputStreamId = tostring(coalesce(column_ifexists("InputStreamId", ""), column_ifexists("StreamName", ""), column_ifexists("DataCollectionRuleId", ""), "Unknown"))
-| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("Operation", ""), column_ifexists("Category", ""), "DCR Log Error"))
-| extend Message = tostring(coalesce(column_ifexists("Message", ""), column_ifexists("ErrorMessage", ""), column_ifexists("Details", ""), column_ifexists("Description", ""), ""))
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message
+| distinct InputStreamId, OperationName, Message
+| extend TimeGenerated=now(), LastTime="", EventCount=1
 | extend Status="Failed", __RecordKind="AggregatedDcrLogError"
-| project TimeGenerated, FirstTime, LastTime, EventCount, InputStreamId, OperationName, Message, Status, __RecordKind
+| project TimeGenerated, LastTime, EventCount, InputStreamId, OperationName, Message, Status, __RecordKind
 "@
 }
 
@@ -1033,18 +1087,19 @@ function New-IntuneAuditLogsOptimizedQuery {
     return @"
 IntuneAuditLogsDCR_CL
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend Actor = tostring(coalesce(column_ifexists("ActorUPN", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("Actor", ""), column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UPN", ""), column_ifexists("UserId", ""), column_ifexists("Identity", ""), "Unknown"))
-| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("Activity", ""), column_ifexists("Operation", ""), column_ifexists("Action", ""), column_ifexists("AuditEventType", ""), "Intune Audit Event"))
-| extend TargetDisplayName = tostring(coalesce(column_ifexists("TargetDisplayName", ""), column_ifexists("Target", ""), column_ifexists("ObjectId", ""), column_ifexists("ResourceDisplayName", ""), column_ifexists("DeviceName", ""), column_ifexists("ManagedDeviceName", ""), ""))
-| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("ResultStatus", ""), column_ifexists("Status", ""), column_ifexists("ActivityResult", ""), column_ifexists("OperationStatus", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Message", ""), column_ifexists("ErrorMessage", ""), ""))
+| extend ActorDisplayName = tostring(coalesce(column_ifexists("ActorDisplayName", ""), column_ifexists("ActorDisplayName_s", ""), column_ifexists("DisplayName", ""), column_ifexists("DisplayName_s", ""), column_ifexists("InitiatedByUserDisplayName", ""), column_ifexists("InitiatedByUserDisplayName_s", ""), column_ifexists("UserDisplayName", ""), column_ifexists("UserDisplayName_s", ""), ""))
+| extend ActorUserPrincipalName = tostring(coalesce(column_ifexists("ActorUPN", ""), column_ifexists("ActorUPN_s", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName_s", ""), column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("InitiatedByUserPrincipalName_s", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserPrincipalName_s", ""), column_ifexists("UPN", ""), column_ifexists("UPN_s", ""), column_ifexists("Actor", ""), column_ifexists("Actor_s", ""), column_ifexists("UserId", ""), column_ifexists("UserId_s", ""), column_ifexists("Identity", ""), column_ifexists("Identity_s", ""), "Unknown"))
+| extend Actor = iff(isnotempty(ActorDisplayName) and ActorDisplayName != ActorUserPrincipalName, strcat(ActorDisplayName, " / ", ActorUserPrincipalName), ActorUserPrincipalName)
+| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("OperationName_s", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("ActivityDisplayName_s", ""), column_ifexists("Activity", ""), column_ifexists("Activity_s", ""), column_ifexists("Operation", ""), column_ifexists("Operation_s", ""), column_ifexists("Action", ""), column_ifexists("Action_s", ""), column_ifexists("AuditEventType", ""), column_ifexists("AuditEventType_s", ""), "Intune Audit Event"))
+| extend TargetDisplayName = tostring(coalesce(column_ifexists("TargetDisplayName", ""), column_ifexists("TargetDisplayName_s", ""), column_ifexists("Target", ""), column_ifexists("Target_s", ""), column_ifexists("ObjectId", ""), column_ifexists("ObjectId_s", ""), column_ifexists("ResourceDisplayName", ""), column_ifexists("ResourceDisplayName_s", ""), column_ifexists("DeviceName", ""), column_ifexists("DeviceName_s", ""), column_ifexists("ManagedDeviceName", ""), column_ifexists("ManagedDeviceName_s", ""), ""))
+| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("Result_s", ""), column_ifexists("ResultStatus", ""), column_ifexists("ResultStatus_s", ""), column_ifexists("Status", ""), column_ifexists("Status_s", ""), column_ifexists("ActivityResult", ""), column_ifexists("ActivityResult_s", ""), column_ifexists("OperationStatus", ""), column_ifexists("OperationStatus_s", ""), ""))
+| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("ResultDescription_s", ""), column_ifexists("FailureReason", ""), column_ifexists("FailureReason_s", ""), column_ifexists("Message", ""), column_ifexists("Message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("ErrorMessage_s", ""), ""))
 | extend __status = tolower(Result)
 | extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
 | extend __isDeleteDisable = tolower(OperationName) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| where __isFailed or __isDeleteDisable
-| extend __RecordKind = iff(__isDeleteDisable, "AggregatedDeleteDisable", "AggregatedIntuneAuditRisk")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
-| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
+| extend __RecordKind = case(__isDeleteDisable, "AggregatedDeleteDisable", __isFailed, "AggregatedIntuneAuditRisk", "AggregatedIntuneAuditRecord")
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
 "@
 }
 
@@ -1057,16 +1112,29 @@ function New-MailboxStatisticsOptimizedQuery {
     return @"
 MailboxStatisticsDCR_CL
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend __UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("MailboxOwnerUPN", ""), column_ifexists("PrimarySmtpAddress", ""), column_ifexists("DisplayName", ""), column_ifexists("Identity", ""), column_ifexists("Mail", ""), column_ifexists("EmailAddress", ""), "Unknown"))
-| summarize arg_max(TimeGenerated, *) by __UserPrincipalName
-| extend UserPrincipalName = __UserPrincipalName
-| extend RecipientTypeDetails = tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""), ""))
-| extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", "")))))
-| extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", "")))))
-| extend TotalItemSizeGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("TotalItemSizeGB", ""), column_ifexists("TotalItemSizeInGB", ""), column_ifexists("MailboxSizeGB", ""), column_ifexists("MailboxSize", ""), column_ifexists("SizeGB", ""), column_ifexists("TotalSizeGB", ""), column_ifexists("TotalItemSize", ""), column_ifexists("StorageUsedGB", ""), column_ifexists("StorageUsed", "")))))
-| where (QuotaLimitGB > 0 and AvailableSpaceGB / QuotaLimitGB < 0.05) or tolower(RecipientTypeDetails) contains "shared"
+| extend MailboxOwnerUPN = tostring(coalesce(column_ifexists("MailboxOwnerUPN", ""), column_ifexists("OwnerUPN", ""), ""))
+| extend PrimarySmtpAddress = tostring(coalesce(column_ifexists("PrimarySmtpAddress", ""), column_ifexists("PrimarySMTPAddress", ""), ""))
+| extend DisplayName = tostring(coalesce(column_ifexists("DisplayName", ""), column_ifexists("MailboxDisplayName", ""), column_ifexists("Name", ""), ""))
+| extend EmailAddress = tostring(coalesce(column_ifexists("EmailAddress", ""), column_ifexists("Mail", ""), column_ifexists("mail", ""), PrimarySmtpAddress, ""))
+| extend UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("UserUPN", ""), column_ifexists("UPN", ""), MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, DisplayName, column_ifexists("Identity", ""), "Unknown"))
+| extend RecipientTypeDetails = tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("RecipientTypeDetail", ""), column_ifexists("RecipientTypeDetails_s", ""), column_ifexists("MailboxRecipientType", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""), ""))
+| extend MailboxType = tostring(coalesce(column_ifexists("MailboxType", ""), column_ifexists("MailboxRecipientType", ""), ""))
+| extend RecipientType = tostring(coalesce(column_ifexists("RecipientType", ""), column_ifexists("RecipientTypeDetail", ""), ""))
+| extend __sharedFlagText = tostring(coalesce(column_ifexists("IsSharedMailbox", ""), column_ifexists("IsSharedMailBox", ""), column_ifexists("IsShared", ""), column_ifexists("SharedMailbox", ""), column_ifexists("SharedMailBox", ""), ""))
+| extend __mailboxTypeText = strcat(" ", RecipientTypeDetails, " ", MailboxType, " ", RecipientType, " ", __sharedFlagText)
+| extend __isSharedMailbox = tolower(__mailboxTypeText) contains "shared" or __sharedFlagText in~ ("true", "1", "yes", "y")
+| extend IsSharedMailbox = tostring(__isSharedMailbox)
+| extend __availableText = tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", "")))
+| extend __quotaText = tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", "")))
+| extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __availableText))
+| extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __quotaText))
+| extend __isLowSpace = QuotaLimitGB > 0 and AvailableSpaceGB < QuotaLimitGB * 0.05
+| where __isLowSpace or __isSharedMailbox
+| extend UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
+| extend MailboxAlertKind = case(__isLowSpace and __isSharedMailbox, "LowSpace;SharedMailbox", __isLowSpace, "LowSpace", __isSharedMailbox, "SharedMailbox", "")
+| extend TotalItemSizeGB = tostring(coalesce(column_ifexists("TotalItemSizeGB", ""), column_ifexists("TotalItemSizeInGB", ""), column_ifexists("MailboxSizeGB", ""), column_ifexists("MailboxSize", ""), column_ifexists("SizeGB", ""), column_ifexists("TotalSizeGB", ""), column_ifexists("TotalItemSize", ""), column_ifexists("StorageUsedGB", ""), column_ifexists("StorageUsed", "")))
 | extend FirstTime=TimeGenerated, LastTime=TimeGenerated, EventCount=1, __RecordKind="LatestMailboxRiskSnapshot"
-| project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, RecipientTypeDetails, AvailableSpaceGB, QuotaLimitGB, TotalItemSizeGB, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, DisplayName, UserPrincipalName, MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, RecipientTypeDetails, MailboxType, RecipientType, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent, TotalItemSizeGB, MailboxAlertKind, __RecordKind
 "@
 }
 
@@ -1112,72 +1180,6 @@ function Get-LogQueryExecutionMode {
         StartTime = (Get-Date).AddHours(-$Hours)
         EndTime = Get-Date
     }
-}
-
-function New-LogAnalyzerScheduleConfig {
-    param(
-        [string]$RunAt = '01:00',
-        [string[]]$Tables = @()
-    )
-
-    if (-not $Tables -or $Tables.Count -eq 0) {
-        $Tables = @($SupportedLogTables | ForEach-Object { $_.Name })
-    }
-
-    foreach ($table in $Tables) {
-        Resolve-LogTableSelection -Selection $table | Out-Null
-    }
-
-    if ($RunAt -notmatch '^([01]\d|2[0-3]):[0-5]\d$') {
-        throw "RunAt must use HH:mm format, got: $RunAt"
-    }
-
-    return [PSCustomObject]@{
-        RunAt = $RunAt
-        Tables = [string[]]$Tables
-    }
-}
-
-function Get-LogAnalyzerScheduleConfigPath {
-    param([string]$RootDir)
-    return Join-Path $RootDir 'schedule-config.json'
-}
-
-function Get-LogAnalyzerStatusPath {
-    param([string]$RootDir)
-    return Join-Path $RootDir 'schedule-status.json'
-}
-
-function Get-LogAnalyzerBatchCommand {
-    param(
-        [string]$RootDir,
-        [string]$ConfigPath
-    )
-
-    $scriptPath = Join-Path $RootDir 'scheduled-run.ps1'
-    return "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
-}
-
-function Get-LogAnalyzerTrayCommand {
-    param(
-        [string]$RootDir,
-        [string]$ConfigPath
-    )
-
-    $scriptPath = Join-Path $RootDir 'tray.ps1'
-    return "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scriptPath`" -ConfigPath `"$ConfigPath`""
-}
-
-function Get-LogAnalyzerNextRunTime {
-    param(
-        [string]$RunAt = '01:00',
-        [datetime]$Now = (Get-Date)
-    )
-
-    $parts = $RunAt.Split(':')
-    $next = $Now.Date.AddHours([int]$parts[0]).AddMinutes([int]$parts[1])
-    if ($next -le $Now) { $next = $next.AddDays(1) }
-    return $next
 }
 
 function Get-OperationGroupValue {

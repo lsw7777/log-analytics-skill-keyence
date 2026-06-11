@@ -6,10 +6,10 @@
     Authenticate via Az module, execute KQL queries using official Az.OperationalInsights library
     Supports interactive browser login and device code flow
 .EXAMPLE
-    .\azure_log_query.ps1
-    .\azure_log_query.ps1 -Query "AzureActivity | top 20 by TimeGenerated desc" -Hours 48
-    .\azure_log_query.ps1 -UseDeviceCode
-    .\azure_log_query.ps1 -Query "AuditGeneralDCR_CL | take 100" -ExportCsv ".\results.csv"
+    .\query-log-analytics.ps1
+    .\query-log-analytics.ps1 -Query "AzureActivity | top 20 by TimeGenerated desc" -Hours 48
+    .\query-log-analytics.ps1 -UseDeviceCode
+    .\query-log-analytics.ps1 -Query "AuditGeneralDCR_CL | take 100" -ExportCsv ".\results.csv"
 #>
 
 param(
@@ -59,7 +59,7 @@ param(
 $AzureEnvironment = "AzureChinaCloud"
 $ModuleName = "Az.OperationalInsights"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-. (Join-Path $ScriptDir 'log-analyzer-core.ps1')
+. (Join-Path $ScriptDir 'log-analyzer-shared.ps1')
 
 # ============================================================
 # Functions
@@ -110,10 +110,10 @@ function Write-AzModuleRepairHelp {
     Write-Host "   Set-PSRepository -Name PSGallery -InstallationPolicy Trusted"
     Write-Host "   Install-Module Az.Accounts -Scope CurrentUser -Force -AllowClobber"
     Write-Host "   Install-Module Az.OperationalInsights -Scope CurrentUser -Force -AllowClobber"
-    Write-Host "4. Re-open PowerShell again, then run .\scripts\run-all.ps1 from the skill root"
+    Write-Host "4. Re-open PowerShell again, then run .\scripts\main.ps1 from the skill root"
     Write-Host ""
     Write-Host "Project shortcut:"
-    Write-Host "   .\scripts\azure_log_query.ps1 -RepairAzModules"
+    Write-Host "   .\scripts\query-log-analytics.ps1 -RepairAzModules"
     Write-Host ""
 }
 
@@ -228,7 +228,7 @@ function Invoke-LogQuery {
         if ($_.Exception.Message -match "401") {
             Write-Host "Status code: 401 (Authentication failed)" -ForegroundColor Red
             Write-Host "`n=== 401 Troubleshooting ===" -ForegroundColor Yellow
-            Write-Host "1. Run: .\scripts\azure_log_query.ps1 -ForceLogin (re-login)"
+            Write-Host "1. Run: .\scripts\query-log-analytics.ps1 -ForceLogin (re-login)"
             Write-Host "2. Confirm current user has read access to Workspace"
             Write-Host "   Role: Log Analytics Reader or higher"
         }
@@ -308,14 +308,14 @@ Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -QueryStar
 # ============================================================
 
 # Re-login (clear cache)
-# .\azure_log_query.ps1 -ForceLogin
+# .\query-log-analytics.ps1 -ForceLogin
 
 # Device code mode
-# .\azure_log_query.ps1 -UseDeviceCode
+# .\query-log-analytics.ps1 -UseDeviceCode
 
 # Custom query and time range
-# .\azure_log_query.ps1 -Query "AzureActivity | top 20 by TimeGenerated desc" -Hours 48
+# .\query-log-analytics.ps1 -Query "AzureActivity | top 20 by TimeGenerated desc" -Hours 48
 
 # Specify Workspace and Tenant
-# .\azure_log_query.ps1 -TenantId "your-tenant-id" -WorkspaceId "your-workspace-id"
+# .\query-log-analytics.ps1 -TenantId "your-tenant-id" -WorkspaceId "your-workspace-id"
 #>

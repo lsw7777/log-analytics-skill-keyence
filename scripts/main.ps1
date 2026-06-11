@@ -57,7 +57,7 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $TempDir = "$env:USERPROFILE\AppData\Local\Temp\opencode"
 $CacheDir = "$TempDir\cache"
 $Now = Get-Date
-. (Join-Path $ScriptDir 'log-analyzer-core.ps1')
+. (Join-Path $ScriptDir 'log-analyzer-shared.ps1')
 
 if ($ClearCache -or $ClearCashe) {
     $removedCount = Clear-LogCache -CacheDir $CacheDir
@@ -202,6 +202,10 @@ if ([string]::IsNullOrWhiteSpace($TableName)) {
     $targetTables = @($TableName.Split(',') | ForEach-Object { Resolve-LogTableSelection -Selection $_.Trim() })
 }
 
+if ($targetTables -notcontains 'DCRLogErrors') {
+    $targetTables += 'DCRLogErrors'
+}
+
 if ($targetTables.Count -eq 1) {
     $reportPaths = Get-LogArtifactPaths -TempDir $TempDir -TableName $targetTables[0] -AnalysisDateStr $AnalysisDateStr -Now $Now
 } else {
@@ -229,10 +233,31 @@ foreach ($table in $targetTables) {
     $sourceKind = 'Query'
     $recordCount = $null
     $paths = Get-LogArtifactPaths -TempDir $TempDir -TableName $table -AnalysisDateStr $AnalysisDateStr -Now $Now
+    $cacheBypassTables = @(
+        'DCRLogErrors',
+        'IntuneAuditLogsDCR_CL',
+        'MailboxStatisticsDCR_CL',
+        'AADManagedIdentitySignInLogs',
+        'AADServicePrincipalSignInLogs',
+        'SigninLogs'
+    )
+    $useTableCache = $UseCache -and $table -notin $cacheBypassTables
     Write-Host "[1/3] Data source: $table" -ForegroundColor Yellow
+    if ($table -eq 'DCRLogErrors') {
+        Write-Host '  Cache skipped: DCRLogErrors uses fixed last-30-days distinct KQL.' -ForegroundColor Yellow
+    }
+    if ($table -eq 'MailboxStatisticsDCR_CL') {
+        Write-Host '  Cache skipped: MailboxStatisticsDCR_CL uses low-space and SharedMailbox KQL.' -ForegroundColor Yellow
+    }
+    if ($table -eq 'IntuneAuditLogsDCR_CL') {
+        Write-Host '  Cache skipped: IntuneAuditLogsDCR_CL uses current audit-record KQL.' -ForegroundColor Yellow
+    }
+    if ($table -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs')) {
+        Write-Host '  Cache skipped: sign-in risk depends on current trusted IP rules.' -ForegroundColor Yellow
+    }
 
     $cacheResult = $null
-    if ($UseCache -and -not $ForceRefresh) {
+    if ($useTableCache -and -not $ForceRefresh) {
         $cacheResult = Test-Cache -CacheCsv $paths.CacheCsv -CacheMeta $paths.CacheMeta -CacheTTL $CacheTTL -TableName $table -StartTime $StartTime -EndTime $EndTime
     }
 
@@ -258,12 +283,12 @@ foreach ($table in $targetTables) {
             if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
             if (-not $NoRiskFilter) { $queryParams['RiskOnly'] = $true }
 
-            & "$ScriptDir\azure_log_query.ps1" @queryParams
+            & "$ScriptDir\query-log-analytics.ps1" @queryParams
         } else {
             $queryArgs = @(
                 '-NoProfile',
                 '-ExecutionPolicy', 'Bypass',
-                '-File', (Join-Path $ScriptDir 'azure_log_query.ps1'),
+                '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
                 '-TableName', $table,
                 '-Hours', ([string]$Hours),
                 '-ExportCsv', $paths.CsvFile,
@@ -287,7 +312,7 @@ foreach ($table in $targetTables) {
             Write-Host "  Query did not generate CSV for $table; skipping." -ForegroundColor Yellow
             continue
         }
-        if ($UseCache) {
+        if ($useTableCache) {
             $recordCount = Save-Cache -SourceCsv $paths.CsvFile -CacheCsv $paths.CacheCsv -CacheMeta $paths.CacheMeta -TableName $table -CacheTTL $CacheTTL -StartTime $StartTime -EndTime $EndTime
         }
     }
@@ -317,7 +342,7 @@ if ($csvFiles.Count -eq 0) {
 Write-Host ''
 Write-Host '[2/3] Generating merged HTML report...' -ForegroundColor Yellow
 $analysisStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-& "$ScriptDir\analyze.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray()
+& "$ScriptDir\generate-html-report.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray()
 $analysisStopwatch.Stop()
 
 if (-not (Test-Path $HtmlFilePath)) {
