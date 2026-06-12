@@ -13,7 +13,7 @@ function Get-SupportedLogTables {
     return $SupportedLogTables
 }
 
-function Resolve-LogTableSelection {
+function Resolve-LogTableSelnn {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Selection
@@ -989,29 +989,16 @@ AuditLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
 | extend __actorUpn = tostring(InitiatedBy.user.userPrincipalName)
 | extend __actorName = tostring(InitiatedBy.user.displayName)
-| extend Actor = iff(isnotempty(__actorName), strcat(__actorName, " / ", __actorUpn), __actorUpn)
+| extend Actor = iff(isnotempty(__actorName) and isnotempty(__actorUpn), strcat(__actorName, " / ", __actorUpn), iff(isnotempty(__actorUpn), __actorUpn, ""))
 | extend UserPrincipalName = Actor
 | where isnotempty(__actorUpn)
 | extend OperationName = tostring(OperationName)
 | extend ActivityDisplayName = tostring(ActivityDisplayName)
-| extend Result = tostring(Result)
-| extend ResultReason = tostring(ResultReason)
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), ResultReason, ""))
-| where not(OperationName has "PIM" or ActivityDisplayName has "PIM" or ResultReason has "PIM activation expired" or ResultDescription has "PIM activation expired")
-| extend __status = tolower(Result)
-| extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __operationLower = tolower(OperationName)
-| extend __isDeleteDisable = (__operationLower has "delete" or __operationLower has "remove" or __operationLower has "disable" or __operationLower has "deactivate")
-| extend __isServicePrincipalAudit = __isSuccess and OperationName in~ ("Add service principal", "Remove service principal", "Hard delete service principal", "Add app role assignment to service principal", "Remove app role assignment from service principal")
-| extend __isSpAppRoleChange = __isSuccess and OperationName in~ ("Add app role assignment to service principal", "Remove app role assignment from service principal")
-| where __isDeleteDisable or __isServicePrincipalAudit
-| extend Target = tostring(TargetResources[0].displayName)
-| extend PermissionName = iff(__isSpAppRoleChange, tostring(TargetResources[0].modifiedProperties[0].appRoleValue), "")
-| extend ResultDescription = iff(__isServicePrincipalAudit and isempty(ResultDescription), "service principal audit change", ResultDescription)
-| extend __RecordKind = iff(__isServicePrincipalAudit, "AggregatedServicePrincipalAudit", "AggregatedDeleteDisable")
+| where isnotempty(OperationName) and OperationName != "" and OperationName != "Unknown"
+| extend __RecordKind = "AggregatedAuditLogEvent"
 | extend ActivityDateTime = iff(isnotempty(tostring(ActivityDateTime)), tostring(ActivityDateTime), tostring(TimeGenerated))
-| summarize TimeGenerated=max(TimeGenerated), ActivityDateTime=max(todatetime(ActivityDateTime)), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, Target, PermissionName, Result, ResultReason, ResultDescription, __RecordKind
-| project TimeGenerated, ActivityDateTime, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, Target, PermissionName, Result, ResultReason, ResultDescription, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), ActivityDateTime=max(todatetime(ActivityDateTime)), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
+| project TimeGenerated, ActivityDateTime, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
 "@
 }
 
