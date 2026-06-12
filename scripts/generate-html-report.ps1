@@ -104,10 +104,30 @@ function New-EventRecord {
     if (-not $firstTime) { $firstTime = [string]$Row.TimeGenerated }
     if (-not $lastTime) { $lastTime = [string]$Row.TimeGenerated }
     $activityDateTime = Get-AnyFieldValue -Row $Row -Names @('ActivityDateTime') -Default $lastTime
+
     $detailFields = @('ResultSignature', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'DeliveryStatus', 'ErrorCode', 'ResultType', 'Subject', 'Message', 'ErrorMessage', 'PermissionName', 'TargetResources', 'ModifiedProperties')
     if ($Table -eq 'AuditLogs') {
-        $detailFields = @('PermissionName', 'ResultSignature', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'ResultType')
+        # 优先从 ModifiedProperties 中提取权限显示名称
+        $modifiedProps = Get-AnyFieldValue -Row $Row -Names @('ModifiedProperties') -Default ''
+        if ($modifiedProps) {
+            # 尝试提取 appRoleValue (Role 名称，如 User.Read.All)
+            if ($modifiedProps -match '"appRoleValue"\s*:\s*"([^"]+)"') {
+                $detailFields = @($matches[1])
+            }
+            # 尝试提取 displayName
+            elseif ($modifiedProps -match '"displayName"\s*:\s*"([^"]+)"') {
+                $detailFields = @($matches[1])
+            }
+            # 如果都没有，使用 PermissionName
+            else {
+                $detailFields = @('PermissionName')
+            }
+        }
+        else {
+            $detailFields = @('PermissionName')
+        }
     }
+
     if ($Table -eq 'DCRLogErrors') {
         $detailFields = @('Message', 'ErrorMessage', 'Details', 'Description', 'Status')
     }
@@ -1071,19 +1091,28 @@ $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtm
     param($r) @($r.User, $r.Type, "$($r.SizeGB) GB", $r.AvailableGB, $r.QuotaGB)
 })
 $permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.PermissionName)" }
+
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
     param($r) 
     $permValue = $r.Detail
-    # 优先提取 app role value (通常是类似 User.Read.All 这种格式)
-    if ($r.Detail -match '"\s*value\s*"\s*:\s*"([^"]+)"') {
-        $permValue = $matches[1]
+    
+    # 如果 Detail 看起来像 GUID，回退到 PermissionName
+    if ($permValue -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+        $permValue = $r.PermissionName
     }
-    elseif ($r.Detail -match '"\s*appRoleValue\s*"\s*:\s*"([^"]+)"') {
-        $permValue = $matches[1]
+    # 如果 PermissionName 也像是 GUID，尝试从 Detail 中提取可读名称
+    if ($permValue -match '^[0-9a-f]{8}') {
+        if ($r.Detail -match '"displayName"\s*:\s*"([^"]+)"') {
+            $permValue = $matches[1]
+        }
+        elseif ($r.Detail -match '"appRoleValue"\s*:\s*"([^"]+)"') {
+            $permValue = $matches[1]
+        }
     }
-    # 如果都提取不到，保持原始的 Detail 内容
+    
     @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
 })
+
 $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distinct InputStreamId, OperationName, Message"
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('InputStreamId', 'OperationName', 'Message') -CellBuilder {
     param($r) @($r.Target, $r.Operation, $r.Detail)
