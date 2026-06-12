@@ -1072,7 +1072,13 @@ $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtm
 })
 $permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.PermissionName)" }
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
-    param($r) @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $r.PermissionName)
+    param($r) 
+    $permValue = $r.PermissionName
+    # 尝试从原始 Detail 字段中提取 app role value
+    if ($r.Detail -match 'value[:\s]*([^,}]+)') {
+        $permValue = $matches[1].Trim() -replace '["\s]', ''
+    }
+    @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
 })
 $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distinct InputStreamId, OperationName, Message"
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('InputStreamId', 'OperationName', 'Message') -CellBuilder {
