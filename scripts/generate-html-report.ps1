@@ -455,6 +455,64 @@ function Confirm-LicenseGraphVerification {
     }
 }
 
+function Get-GraphAuthCodeTokenCandidate {
+    param(
+        [string]$TenantId = '420c4dab-8603-402f-afe0-75bc28c51c13'
+    )
+
+    if (-not (Confirm-LicenseGraphVerification)) {
+        throw '用户选择跳过 Microsoft Graph License API 验证。'
+    }
+
+    $clientIds = @(
+        '14d82eec-204b-4c2f-b7e8-296a70dab67e',
+        '1950a258-227b-4e31-a9cf-717495945fc2'
+    )
+    $loginBase = 'https://login.chinacloudapi.cn'
+    $graphScope = 'https://microsoftgraph.chinacloudapi.cn/Organization.Read.All offline_access'
+    $endpoint = 'https://microsoftgraph.chinacloudapi.cn/v1.0/subscribedSkus'
+    $tenant = if ([string]::IsNullOrWhiteSpace($TenantId)) { 'common' } else { $TenantId }
+
+    # 尝试使用 MSAL.PS 进行 AuthCodeFlow 登录
+    if (-not (Get-Module -ListAvailable -Name MSAL.PS)) {
+        try {
+            Install-Module -Name MSAL.PS -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
+            Import-Module -Name MSAL.PS -Force -ErrorAction Stop
+        } catch {
+            throw "无法安装/导入 MSAL.PS 模块：$($_.Exception.Message)"
+        }
+    }
+    if (-not (Get-Module -Name MSAL.PS)) {
+        Import-Module -Name MSAL.PS -ErrorAction Stop
+    }
+
+    $errors = [System.Collections.Generic.List[string]]::new()
+    foreach ($clientId in $clientIds) {
+        try {
+            Write-Host ''
+            Write-Host '=== Microsoft Graph License API Login Required (AuthCodeFlow) ===' -ForegroundColor Yellow
+            Write-Host '正在打开浏览器进行登录... 请使用浏览器完成认证。' -ForegroundColor Cyan
+
+            $token = Get-MsalToken `
+                -ClientId $clientId `
+                -TenantId $tenant `
+                -Authority "$loginBase/$tenant" `
+                -Scopes $graphScope.Split(' ') `
+                -RedirectUri "http://localhost" `
+                -Interactive
+
+            if ($token.AccessToken) {
+                Write-Host 'Microsoft Graph AuthCodeFlow 登录成功。' -ForegroundColor Green
+                return [PSCustomObject]@{ Source = 'AuthCode:ChinaGraph'; Endpoint = $endpoint; Token = $token.AccessToken }
+            }
+        } catch {
+            $errors.Add("ClientId $clientId`: $($_.Exception.Message)") | Out-Null
+        }
+    }
+
+    throw "无法通过 AuthCodeFlow 获取 Microsoft Graph 访问令牌。$($errors -join '；')"
+}
+
 function Get-GraphDeviceCodeTokenCandidate {
     param(
         [string]$TenantId = '420c4dab-8603-402f-afe0-75bc28c51c13'
@@ -571,10 +629,17 @@ function Get-GraphAccessTokenCandidates {
     }
 
     if ($candidates.Count -eq 0) {
+        # 优先尝试 AuthCodeFlow（中国版），失败后回退到 DeviceCodeFlow
         try {
-            $candidates.Add((Get-GraphDeviceCodeTokenCandidate)) | Out-Null
+            $candidates.Add((Get-GraphAuthCodeTokenCandidate)) | Out-Null
         } catch {
-            $errors.Add("DeviceCode ChinaGraph: $($_.Exception.Message)") | Out-Null
+            $errors.Add("AuthCode ChinaGraph: $($_.Exception.Message)") | Out-Null
+            Write-Host "AuthCodeFlow 失败，回退到 DeviceCodeFlow...`n" -ForegroundColor Yellow
+            try {
+                $candidates.Add((Get-GraphDeviceCodeTokenCandidate)) | Out-Null
+            } catch {
+                $errors.Add("DeviceCode ChinaGraph: $($_.Exception.Message)") | Out-Null
+            }
         }
     }
 
