@@ -1073,11 +1073,15 @@ $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtm
 $permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.PermissionName)" }
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
     param($r) 
-    $permValue = $r.PermissionName
-    # 尝试从原始 Detail 字段中提取 app role value
-    if ($r.Detail -match 'value[:\s]*([^,}]+)') {
-        $permValue = $matches[1].Trim() -replace '["\s]', ''
+    $permValue = $r.Detail
+    # 优先提取 app role value (通常是类似 User.Read.All 这种格式)
+    if ($r.Detail -match '"\s*value\s*"\s*:\s*"([^"]+)"') {
+        $permValue = $matches[1]
     }
+    elseif ($r.Detail -match '"\s*appRoleValue\s*"\s*:\s*"([^"]+)"') {
+        $permValue = $matches[1]
+    }
+    # 如果都提取不到，保持原始的 Detail 内容
     @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
 })
 $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distinct InputStreamId, OperationName, Message"

@@ -872,7 +872,7 @@ function New-AadIdentitySigninOptimizedQuery {
         [string]$EndUtc
     )
 
-    $failedThresholdClause = if ($TableName -eq 'AADServicePrincipalSignInLogs') { '| where __RecordKind != "AggregatedFailedSignin" or EventCount > 10' } else { '' }
+    $failedThresholdClause = '| where __RecordKind != "AggregatedFailedSignin" or EventCount > 10'
     $trustedIps = Get-TrustedIpKqlDynamicLiteral
 
     return @"
