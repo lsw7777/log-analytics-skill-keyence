@@ -992,13 +992,14 @@ AuditLogs
 | extend Actor = iff(isnotempty(__actorName) and isnotempty(__actorUpn), strcat(__actorName, " / ", __actorUpn), iff(isnotempty(__actorUpn), __actorUpn, ""))
 | extend UserPrincipalName = Actor
 | where isnotempty(__actorUpn)
-| extend OperationName = tostring(OperationName)
-| extend ActivityDisplayName = tostring(ActivityDisplayName)
+| extend OperationNameRaw = tostring(OperationName)
+| extend ActivityDisplayNameRaw = tostring(ActivityDisplayName)
+| extend OperationName = iff(isnotempty(OperationNameRaw) and OperationNameRaw != "", OperationNameRaw, "Unknown Operation")
+| extend ActivityDisplayName = iff(isnotempty(ActivityDisplayNameRaw) and ActivityDisplayNameRaw != "", ActivityDisplayNameRaw, OperationName)
 | where isnotempty(OperationName) and OperationName != "" and OperationName != "Unknown"
 | extend __RecordKind = "AggregatedAuditLogEvent"
-| extend ActivityDateTime = iff(isnotempty(tostring(ActivityDateTime)), tostring(ActivityDateTime), tostring(TimeGenerated))
-| summarize TimeGenerated=max(TimeGenerated), ActivityDateTime=max(todatetime(ActivityDateTime)), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
-| project TimeGenerated, ActivityDateTime, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
 "@
 }
 

@@ -466,7 +466,8 @@ function Get-GraphAuthCodeTokenCandidate {
 
     $clientIds = @(
         '14d82eec-204b-4c2f-b7e8-296a70dab67e',
-        '1950a258-227b-4e31-a9cf-717495945fc2'
+        '0be339b1-54ca-403c-b59d-b2938d2d1be5
+'
     )
     $loginBase = 'https://login.chinacloudapi.cn'
     $graphScope = 'https://microsoftgraph.chinacloudapi.cn/Organization.Read.All offline_access'
