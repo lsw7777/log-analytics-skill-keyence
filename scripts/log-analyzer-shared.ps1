@@ -1006,7 +1006,7 @@ AuditLogs
 | extend __isSpAppRoleChange = __isSuccess and OperationName in~ ("Add app role assignment to service principal", "Remove app role assignment from service principal")
 | where __isDeleteDisable or __isServicePrincipalAudit
 | extend Target = tostring(TargetResources[0].displayName)
-| extend PermissionName = iff(__isSpAppRoleChange, tostring(TargetResources[0].modifiedProperties[0].newValue), "")
+| extend PermissionName = iff(__isSpAppRoleChange, tostring(TargetResources[0].modifiedProperties[0].appRoleValue), "")
 | extend ResultDescription = iff(__isServicePrincipalAudit and isempty(ResultDescription), "service principal audit change", ResultDescription)
 | extend __RecordKind = iff(__isServicePrincipalAudit, "AggregatedServicePrincipalAudit", "AggregatedDeleteDisable")
 | extend ActivityDateTime = iff(isnotempty(tostring(ActivityDateTime)), tostring(ActivityDateTime), tostring(TimeGenerated))
