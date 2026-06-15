@@ -225,6 +225,7 @@ Write-Host ''
 
 $csvFiles = [System.Collections.Generic.List[string]]::new()
 $csvTables = [System.Collections.Generic.List[string]]::new()
+$csvTotalCounts = [System.Collections.Generic.List[int]]::new()
 $diagnosticRows = [System.Collections.Generic.List[object]]::new()
 $overallStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 
@@ -259,6 +260,37 @@ foreach ($table in $targetTables) {
     $cacheResult = $null
     if ($useTableCache -and -not $ForceRefresh) {
         $cacheResult = Test-Cache -CacheCsv $paths.CacheCsv -CacheMeta $paths.CacheMeta -CacheTTL $CacheTTL -TableName $table -StartTime $StartTime -EndTime $EndTime
+    }
+
+    # Get total record count for the table (without risk filter)
+    $totalCount = 0
+    try {
+        $totalCountQuery = New-TableTotalCountQuery -TableName $table -StartTime $StartTime -EndTime $EndTime
+        Write-Host "  Getting total record count..." -ForegroundColor DarkGray
+        Write-Host "  Query: $totalCountQuery" -ForegroundColor DarkGray
+        # Note: Do NOT pass -TableName here, only pass -Query, otherwise the script will 
+        # auto-generate a query based on the table name and ignore our count query
+        $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -ErrorAction Stop 2>&1
+        $exitCode = $LASTEXITCODE
+        Write-Host "  Exit code: $exitCode" -ForegroundColor DarkGray
+        Write-Host "  Raw result type: $($totalCountResult.GetType().Name)" -ForegroundColor DarkGray
+        Write-Host "  Raw result: $totalCountResult" -ForegroundColor DarkGray
+        
+        # Parse the output - handle both string and array of objects
+        $resultString = if ($totalCountResult -is [array]) {
+            $totalCountResult | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1
+        } else {
+            $totalCountResult.ToString()
+        }
+        
+        if ($resultString -match '^\d+$') {
+            $totalCount = [int]$resultString
+        }
+        
+        Write-Host "  Parsed total count: $totalCount" -ForegroundColor DarkGray
+    } catch {
+        Write-Host "  Failed to get total count: $_" -ForegroundColor DarkYellow
+        Write-Host "  Exception type: $($_.Exception.GetType().Name)" -ForegroundColor DarkYellow
     }
 
     if ($cacheResult -and $cacheResult.Hit) {
@@ -333,6 +365,7 @@ foreach ($table in $targetTables) {
 
     $csvFiles.Add($paths.CsvFile) | Out-Null
     $csvTables.Add($table) | Out-Null
+    $csvTotalCounts.Add($totalCount) | Out-Null
 }
 
 if ($csvFiles.Count -eq 0) {
@@ -342,7 +375,7 @@ if ($csvFiles.Count -eq 0) {
 Write-Host ''
 Write-Host '[2/3] Generating merged HTML report...' -ForegroundColor Yellow
 $analysisStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-& "$ScriptDir\generate-html-report.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray()
+& "$ScriptDir\generate-html-report.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray() -TotalCounts $csvTotalCounts.ToArray()
 $analysisStopwatch.Stop()
 
 if (-not (Test-Path $HtmlFilePath)) {

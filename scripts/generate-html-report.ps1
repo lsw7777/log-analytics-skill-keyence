@@ -9,7 +9,10 @@
     [string]$AnalysisDate,
 
     [Parameter(Mandatory = $true)]
-    [string[]]$TableName
+    [string[]]$TableName,
+
+    [Parameter(Mandatory = $false)]
+    [int[]]$TotalCounts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -861,9 +864,12 @@ $dcrLogErrorRows = [System.Collections.Generic.List[object]]::new()
 $intuneAuditRows = [System.Collections.Generic.List[object]]::new()
 $sourceStatusRows = [System.Collections.Generic.List[object]]::new()
 
-foreach ($dataset in $datasets) {
+for ($i = 0; $i -lt $datasets.Count; $i++) {
+    $dataset = $datasets[$i]
     $table = $dataset.Table
-    $sourceStatusRows.Add([PSCustomObject]@{ Table = $table; Records = $dataset.Rows.Count; Source = (Split-Path -Leaf $dataset.Path) }) | Out-Null
+    $filteredCount = $dataset.Rows.Count
+    $totalCount = if ($TotalCounts -and $i -lt $TotalCounts.Count) { $TotalCounts[$i] } else { $filteredCount }
+    $sourceStatusRows.Add([PSCustomObject]@{ Table = $table; TotalRecords = $totalCount; FilteredRecords = $filteredCount; Source = (Split-Path -Leaf $dataset.Path) }) | Out-Null
 
     foreach ($row in $dataset.Rows) {
         if ($table -eq 'AuditLogs') {
@@ -1348,8 +1354,8 @@ $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
 })
-$sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtml -Rows $sourceStatusRows -Columns @('表', '记录数', 'CSV') -CellBuilder {
-    param($r) @($r.Table, $r.Records, $r.Source)
+$sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtml -Rows $sourceStatusRows -Columns @('表', '总记录数', '筛选后记录数', 'CSV') -CellBuilder {
+    param($r) @($r.Table, $r.TotalRecords, $r.FilteredRecords, $r.Source)
 })
 
 $sectionSpecs = @(

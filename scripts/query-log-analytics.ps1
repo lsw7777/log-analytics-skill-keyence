@@ -50,7 +50,13 @@ param(
     [switch]$RepairAzModules,
 
     [Parameter(Mandatory = $false)]
-    [switch]$RiskOnly
+    [switch]$RiskOnly,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$RawCount,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$NoProfile
 )
 
 # ============================================================
@@ -70,7 +76,11 @@ function Initialize-Modules {
     .SYNOPSIS
         Check and install required Az modules
     #>
-    Write-Host "`n=== Checking Az Modules ===" -ForegroundColor Cyan
+    param([switch]$Silent)
+    
+    if (-not $Silent) {
+        Write-Host "`n=== Checking Az Modules ===" -ForegroundColor Cyan
+    }
 
     if ($RepairAzModules) {
         Repair-AzModules
@@ -82,12 +92,18 @@ function Initialize-Modules {
     foreach ($mod in $requiredModules) {
         $module = Get-Module -ListAvailable -Name $mod
         if (-not $module) {
-            Write-Host "Installing $mod..." -ForegroundColor Yellow
+            if (-not $Silent) {
+                Write-Host "Installing $mod..." -ForegroundColor Yellow
+            }
             Install-Module -Name $mod -Scope CurrentUser -Force -Confirm:$false -AllowClobber
-            Write-Host "$mod installed successfully!" -ForegroundColor Green
+            if (-not $Silent) {
+                Write-Host "$mod installed successfully!" -ForegroundColor Green
+            }
         }
         Import-Module $mod -Force -WarningAction SilentlyContinue
-        Write-Host "$mod Version: $((Get-Module $mod).Version)" -ForegroundColor Green
+        if (-not $Silent) {
+            Write-Host "$mod Version: $((Get-Module $mod).Version)" -ForegroundColor Green
+        }
     }
 }
 
@@ -122,7 +138,11 @@ function Initialize-AzAuth {
     .SYNOPSIS
         Initialize Azure authentication
     #>
-    Write-Host "`n=== Azure Authentication ===" -ForegroundColor Cyan
+    param([switch]$Silent)
+    
+    if (-not $Silent) {
+        Write-Host "`n=== Azure Authentication ===" -ForegroundColor Cyan
+    }
 
     # Check if already logged in
     if (-not $ForceLogin) {
@@ -134,10 +154,12 @@ function Initialize-AzAuth {
                 if ($currentTenant -and $currentTenant -eq $TenantId) {
                     # Check if environment is Azure China Cloud
                     if ($context.Environment.Name -like "*China*") {
-                        Write-Host "Current account: $($context.Account)"
-                        Write-Host "Tenant ID: $currentTenant"
-                        Write-Host "Environment: $($context.Environment.Name)"
-                        Write-Host "Using existing session`n" -ForegroundColor Green
+                        if (-not $Silent) {
+                            Write-Host "Current account: $($context.Account)"
+                            Write-Host "Tenant ID: $currentTenant"
+                            Write-Host "Environment: $($context.Environment.Name)"
+                            Write-Host "Using existing session`n" -ForegroundColor Green
+                        }
                         return
                     }
                 }
@@ -149,13 +171,17 @@ function Initialize-AzAuth {
     }
 
     # Connect using built-in AzureChinaCloud environment name
-    Write-Host "A browser window will open for login..." -ForegroundColor Yellow
+    if (-not $Silent) {
+        Write-Host "A browser window will open for login..." -ForegroundColor Yellow
+    }
     $connectParams = @{
         Environment = $AzureEnvironment
         Tenant      = $TenantId
     }
     if ($UseDeviceCode) {
-        Write-Host "Using device code mode..." -ForegroundColor Yellow
+        if (-not $Silent) {
+            Write-Host "Using device code mode..." -ForegroundColor Yellow
+        }
         $connectParams['UseDeviceAuthentication'] = $true
     }
 
@@ -171,7 +197,9 @@ function Initialize-AzAuth {
     }
 
     $ctx = Get-AzContext
-    Write-Host "Login successful! Account: $($ctx.Account)" -ForegroundColor Green
+    if (-not $Silent) {
+        Write-Host "Login successful! Account: $($ctx.Account)" -ForegroundColor Green
+    }
 }
 
 function Invoke-LogQuery {
@@ -192,20 +220,24 @@ function Invoke-LogQuery {
 
         [datetime]$QueryEndTime,
 
-        [switch]$IncludeStats
+        [switch]$IncludeStats,
+
+        [switch]$RawCount
     )
 
-    Write-Host "`n=== Executing Log Query ===" -ForegroundColor Cyan
-    Write-Host "Workspace: $WorkspaceId"
-    Write-Host "Query: $($Query.Substring(0, [Math]::Min(80, $Query.Length)))..."
-    if ($QueryStartTime -and $QueryEndTime) {
-        $startTime = $QueryStartTime
-        $endTime = $QueryEndTime
-        Write-Host "Time range: $($startTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($endTime.ToString('yyyy-MM-dd HH:mm:ss'))"
-    } else {
-        $startTime = (Get-Date).AddHours(-$Hours)
-        $endTime = (Get-Date)
-        Write-Host "Time range: Past $Hours hours"
+    if (-not $RawCount) {
+        Write-Host "`n=== Executing Log Query ===" -ForegroundColor Cyan
+        Write-Host "Workspace: $WorkspaceId"
+        Write-Host "Query: $($Query.Substring(0, [Math]::Min(80, $Query.Length)))..."
+        if ($QueryStartTime -and $QueryEndTime) {
+            $startTime = $QueryStartTime
+            $endTime = $QueryEndTime
+            Write-Host "Time range: $($startTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($endTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+        } else {
+            $startTime = (Get-Date).AddHours(-$Hours)
+            $endTime = (Get-Date)
+            Write-Host "Time range: Past $Hours hours"
+        }
     }
 
     $queryMode = Get-LogQueryExecutionMode -QueryStartTime $QueryStartTime -QueryEndTime $QueryEndTime -Hours $Hours
@@ -216,58 +248,141 @@ function Invoke-LogQuery {
             Query = $Query
             ErrorAction = 'Stop'
         }
-        if ($queryMode.UseTimespan) {
-            $queryParams['Timespan'] = $queryMode.Timespan
+
+        # For RawCount queries, the KQL query already contains time filtering in the where clause.
+        # Do NOT pass Timespan parameter, as it may override or conflict with the query's time filter.
+        # For non-RawCount queries, use Timespan parameter as usual.
+        if (-not $RawCount) {
+            if ($queryMode.UseTimespan) {
+                $queryParams['Timespan'] = $queryMode.Timespan
+            } else {
+                # Calculate timespan from start and end times
+                $queryParams['Timespan'] = New-TimeSpan -Start $queryMode.StartTime -End $queryMode.EndTime
+            }
         }
 
         $response = Invoke-AzOperationalInsightsQuery @queryParams
     }
     catch {
-        Write-Host "`nQuery failed!" -ForegroundColor Red
+        if (-not $RawCount) {
+            Write-Host "`nQuery failed!" -ForegroundColor Red
 
-        # 显示完整的查询语句以便调试
-        Write-Host "`n=== Query Debug Info ===" -ForegroundColor Yellow
-        Write-Host "Table: $TableName" -ForegroundColor Yellow
-        Write-Host "Query length: $($Query.Length) characters" -ForegroundColor Yellow
-        Write-Host "`n--- Full Query ---" -ForegroundColor Yellow
-        Write-Host $Query -ForegroundColor Gray
-        Write-Host "--- End Query ---" -ForegroundColor Yellow
+            # 显示完整的查询语句以便调试
+            Write-Host "`n=== Query Debug Info ===" -ForegroundColor Yellow
+            Write-Host "Table: $TableName" -ForegroundColor Yellow
+            Write-Host "Query length: $($Query.Length) characters" -ForegroundColor Yellow
+            Write-Host "`n--- Full Query ---" -ForegroundColor Yellow
+            Write-Host $Query -ForegroundColor Gray
+            Write-Host "--- End Query ---" -ForegroundColor Yellow
 
-        if ($_.Exception.Message -match "401") {
-            Write-Host "Status code: 401 (Authentication failed)" -ForegroundColor Red
-            Write-Host "`n=== 401 Troubleshooting ===" -ForegroundColor Yellow
-            Write-Host "1. Run: .\scripts\query-log-analytics.ps1 -ForceLogin (re-login)"
-            Write-Host "2. Confirm current user has read access to Workspace"
-            Write-Host "   Role: Log Analytics Reader or higher"
-        }
-        elseif ($_.Exception.Message -match "403") {
-            Write-Host "Status code: 403 (Insufficient permissions)" -ForegroundColor Red
-            Write-Host "`n=== 403 Troubleshooting ===" -ForegroundColor Yellow
-            Write-Host "1. Confirm user has permissions on:"
-            Write-Host "   - Subscription: Reader at minimum"
-            Write-Host "   - Resource group: Reader at minimum"
-            Write-Host "   - Workspace: Log Analytics Reader"
-        }
-        elseif ($_.Exception.Message -match "BadRequest|400") {
-            Write-Host "Status code: 400 (Bad Request - Query syntax error)" -ForegroundColor Red
-            Write-Host "`n=== 400 Troubleshooting ===" -ForegroundColor Yellow
-            Write-Host "1. Check if the table exists in the workspace"
-            Write-Host "2. Verify column names in the query match the table schema"
-            Write-Host "3. Try running a simple query first: $TableName | take 10"
-            Write-Host "4. Check for KQL syntax errors in the query above"
-        }
-        else {
-            Write-Host $_.Exception.Message -ForegroundColor Red
-            if ($_.Exception.InnerException) {
-                Write-Host "Internal error: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+            if ($_.Exception.Message -match "401") {
+                Write-Host "Status code: 401 (Authentication failed)" -ForegroundColor Red
+                Write-Host "`n=== 401 Troubleshooting ===" -ForegroundColor Yellow
+                Write-Host "1. Run: .\scripts\query-log-analytics.ps1 -ForceLogin (re-login)"
+                Write-Host "2. Confirm current user has read access to Workspace"
+                Write-Host "   Role: Log Analytics Reader or higher"
+            }
+            elseif ($_.Exception.Message -match "403") {
+                Write-Host "Status code: 403 (Insufficient permissions)" -ForegroundColor Red
+                Write-Host "`n=== 403 Troubleshooting ===" -ForegroundColor Yellow
+                Write-Host "1. Confirm user has permissions on:"
+                Write-Host "   - Subscription: Reader at minimum"
+                Write-Host "   - Resource group: Reader at minimum"
+                Write-Host "   - Workspace: Log Analytics Reader"
+            }
+            elseif ($_.Exception.Message -match "BadRequest|400") {
+                Write-Host "Status code: 400 (Bad Request - Query syntax error)" -ForegroundColor Red
+                Write-Host "`n=== 400 Troubleshooting ===" -ForegroundColor Yellow
+                Write-Host "1. Check if the table exists in the workspace"
+                Write-Host "2. Verify column names in the query match the table schema"
+                Write-Host "3. Try running a simple query first: $TableName | take 10"
+                Write-Host "4. Check for KQL syntax errors in the query above"
+            }
+            else {
+                Write-Host $_.Exception.Message -ForegroundColor Red
+                if ($_.Exception.InnerException) {
+                    Write-Host "Internal error: $($_.Exception.InnerException.Message)" -ForegroundColor Red
+                }
             }
         }
         throw
     }
 
     # Parse response
-    if ($response.Results) {
-        if ($ExportCsv) {
+    # Handle both DataTable and array/null cases for Results
+    $hasResults = $false
+    if ($null -ne $response.Results) {
+        if ($response.Results -is [System.Data.DataTable]) {
+            $hasResults = $response.Results.Rows.Count -gt 0
+        } elseif ($response.Results -is [array]) {
+            $hasResults = $response.Results.Count -gt 0
+        } else {
+            # Single object or other type
+            $hasResults = $true
+        }
+    }
+    
+    if ($hasResults) {
+        if ($RawCount) {
+            # For count queries, output just the number
+            # KQL count operator returns field as 'count_' (with underscore)
+            $countValue = $null
+            
+            # Check if Results is a DataTable (Invoke-AzOperationalInsightsQuery returns DataTable)
+            if ($response.Results -is [System.Data.DataTable]) {
+                $dataTable = $response.Results
+                Write-Verbose "DataTable columns: $($dataTable.Columns | ForEach-Object { $_.ColumnName })"
+                Write-Verbose "DataTable rows count: $($dataTable.Rows.Count)"
+                
+                if ($dataTable.Rows.Count -gt 0) {
+                    $row = $dataTable.Rows[0]
+                    # Try multiple possible column names (KQL count returns 'count_')
+                    foreach ($colName in @('count_', 'count', 'Count', 'COUNT')) {
+                        if ($dataTable.Columns.Contains($colName)) {
+                            $countValue = $row[$colName]
+                            Write-Verbose "Found count in column '$colName': $countValue"
+                            break
+                        }
+                    }
+                    # If still null, try the first column
+                    if ($null -eq $countValue -and $dataTable.Columns.Count -gt 0) {
+                        $countValue = $row[0]
+                        Write-Verbose "Using first column value: $countValue"
+                    }
+                }
+            } else {
+                # Results is an array or single object (fallback)
+                $resultArray = if ($response.Results -is [array]) { $response.Results } else { @($response.Results) }
+                $result = $resultArray[0]
+                $countValue = $null
+                
+                # Debug: Output all property names to help identify the correct field
+                $debugFieldNames = @($result.PSObject.Properties.Name) -join ', '
+                Write-Verbose "Available fields: $debugFieldNames"
+                
+                # Try multiple possible field names
+                foreach ($fieldName in @('count_', 'count', 'Count', 'COUNT')) {
+                    if ($result.PSObject.Properties.Name -contains $fieldName) {
+                        $countValue = $result.$fieldName
+                        Write-Verbose "Found count in field '$fieldName': $countValue"
+                        break
+                    }
+                }
+                
+                # If still null, try to get the first property value
+                if ($null -eq $countValue) {
+                    $firstProp = $result.PSObject.Properties | Select-Object -First 1
+                    if ($firstProp) {
+                        $countValue = $firstProp.Value
+                        Write-Verbose "Using first property value: $countValue"
+                    }
+                }
+            }
+            
+            if ($null -eq $countValue) { $countValue = 0 }
+            # Output as string to ensure consistent parsing
+            Write-Output "$countValue"
+        } elseif ($ExportCsv) {
             Write-Host "`nExporting to CSV: $ExportCsv" -ForegroundColor Cyan
             $response.Results | Export-Csv -Path $ExportCsv -NoTypeInformation -Encoding UTF8
             Write-Host "Export successful! Total: $($response.Results.Count) rows" -ForegroundColor Green
@@ -276,10 +391,15 @@ function Invoke-LogQuery {
         }
     }
     else {
-        Write-Host "`nQuery returned empty results" -ForegroundColor Yellow
-        if ($ExportCsv) {
-            'TimeGenerated' | Out-File -FilePath $ExportCsv -Encoding UTF8 -Force
-            Write-Host "Empty CSV created: $ExportCsv" -ForegroundColor Yellow
+        if ($RawCount) {
+            # Output as string to ensure consistent parsing
+            Write-Output "0"
+        } else {
+            Write-Host "`nQuery returned empty results" -ForegroundColor Yellow
+            if ($ExportCsv) {
+                'TimeGenerated' | Out-File -FilePath $ExportCsv -Encoding UTF8 -Force
+                Write-Host "Empty CSV created: $ExportCsv" -ForegroundColor Yellow
+            }
         }
     }
 }
@@ -287,20 +407,22 @@ function Invoke-LogQuery {
 # ============================================================
 # Main
 # ============================================================
-Write-Host "============================================" -ForegroundColor Magenta
-Write-Host "  Azure Monitor Log Query - China Cloud" -ForegroundColor Magenta
-Write-Host "  Using Az.OperationalInsights Official Library" -ForegroundColor Magenta
-Write-Host "============================================" -ForegroundColor Magenta
+if (-not $RawCount) {
+    Write-Host "============================================" -ForegroundColor Magenta
+    Write-Host "  Azure Monitor Log Query - China Cloud" -ForegroundColor Magenta
+    Write-Host "  Using Az.OperationalInsights Official Library" -ForegroundColor Magenta
+    Write-Host "============================================" -ForegroundColor Magenta
+}
 
 # Initialize modules
-Initialize-Modules
+Initialize-Modules -Silent:$RawCount
 
 if ($RepairAzModules) {
     exit 0
 }
 
 # Authenticate
-Initialize-AzAuth
+Initialize-AzAuth -Silent:$RawCount
 
 # Build table query when table and explicit range are provided
 $queryStartTime = $null
@@ -312,10 +434,14 @@ if ($TableName) {
     $queryStartTime = [DateTime]::Parse($StartTime)
     $queryEndTime = [DateTime]::Parse($EndTime)
     $Query = New-LogTableQuery -TableName $TableName -StartTime $queryStartTime -EndTime $queryEndTime -RiskOnly:$RiskOnly
+} elseif ($StartTime -and $EndTime) {
+    # When no TableName but StartTime/EndTime are provided (e.g., for count queries)
+    $queryStartTime = [DateTime]::Parse($StartTime)
+    $queryEndTime = [DateTime]::Parse($EndTime)
 }
 
 # Execute query
-Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -QueryStartTime $queryStartTime -QueryEndTime $queryEndTime -IncludeStats:$IncludeStats
+Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -QueryStartTime $queryStartTime -QueryEndTime $queryEndTime -IncludeStats:$IncludeStats -RawCount:$RawCount
 
 
 <#

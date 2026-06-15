@@ -1095,6 +1095,7 @@ function New-MailboxStatisticsOptimizedQuery {
         [string]$EndUtc
     )
 
+    # 返回所有邮箱统计数据，不在查询端过滤，由报告端进行风险分析
     return @"
 MailboxStatisticsDCR_CL
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
@@ -1110,17 +1111,14 @@ MailboxStatisticsDCR_CL
 | extend __mailboxTypeText = strcat(" ", RecipientTypeDetails, " ", MailboxType, " ", RecipientType, " ", __sharedFlagText)
 | extend __isSharedMailbox = tolower(__mailboxTypeText) contains "shared" or __sharedFlagText in~ ("true", "1", "yes", "y")
 | extend IsSharedMailbox = tostring(__isSharedMailbox)
-| extend __availableText = tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", "")))
-| extend __quotaText = tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", "")))
+| extend __availableText = tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", ""), column_ifexists("AvailableSpaceGB_s", ""), column_ifexists("AvailableSpaceInGB_s", "")))
+| extend __quotaText = tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", ""), column_ifexists("QuotaLimitGB_s", ""), column_ifexists("QuotaGB_s", "")))
 | extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __availableText))
 | extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __quotaText))
-| extend __isLowSpace = QuotaLimitGB > 0 and AvailableSpaceGB < QuotaLimitGB * 0.05
-| where __isLowSpace or __isSharedMailbox
 | extend UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
-| extend MailboxAlertKind = case(__isLowSpace and __isSharedMailbox, "LowSpace;SharedMailbox", __isLowSpace, "LowSpace", __isSharedMailbox, "SharedMailbox", "")
-| extend TotalItemSizeGB = tostring(coalesce(column_ifexists("TotalItemSizeGB", ""), column_ifexists("TotalItemSizeInGB", ""), column_ifexists("MailboxSizeGB", ""), column_ifexists("MailboxSize", ""), column_ifexists("SizeGB", ""), column_ifexists("TotalSizeGB", ""), column_ifexists("TotalItemSize", ""), column_ifexists("StorageUsedGB", ""), column_ifexists("StorageUsed", "")))
-| extend FirstTime=TimeGenerated, LastTime=TimeGenerated, EventCount=1, __RecordKind="LatestMailboxRiskSnapshot"
-| project TimeGenerated, FirstTime, LastTime, EventCount, DisplayName, UserPrincipalName, MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, RecipientTypeDetails, MailboxType, RecipientType, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent, TotalItemSizeGB, MailboxAlertKind, __RecordKind
+| extend TotalItemSizeGB = tostring(coalesce(column_ifexists("TotalItemSizeGB", ""), column_ifexists("TotalItemSizeInGB", ""), column_ifexists("MailboxSizeGB", ""), column_ifexists("MailboxSize", ""), column_ifexists("SizeGB", ""), column_ifexists("TotalSizeGB", ""), column_ifexists("TotalItemSize", ""), column_ifexists("StorageUsedGB", ""), column_ifexists("StorageUsed", ""), column_ifexists("TotalItemSizeGB_s", ""), column_ifexists("MailboxSizeGB_s", "")))
+| extend FirstTime=TimeGenerated, LastTime=TimeGenerated, EventCount=1, __RecordKind="LatestMailboxSnapshot"
+| project TimeGenerated, FirstTime, LastTime, EventCount, DisplayName, UserPrincipalName, MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, RecipientTypeDetails, MailboxType, RecipientType, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent, TotalItemSizeGB, __RecordKind
 "@
 }
 
@@ -1142,6 +1140,30 @@ function New-RiskOptimizedLogTableQuery {
         'SigninLogs' { return New-SigninLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
         default { throw "Unsupported log table: $TableName" }
     }
+}
+
+function New-TableTotalCountQuery {
+    <#
+    .SYNOPSIS
+        Generate a KQL query to get the total record count for a table within a time range
+    .DESCRIPTION
+        Generates a count query with explicit where clause for time range filtering.
+        Example: TableName | where TimeGenerated >= datetime(...) and TimeGenerated < datetime(...) | count
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$TableName,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$StartTime,
+
+        [Parameter(Mandatory = $true)]
+        [datetime]$EndTime
+    )
+
+    $start = $StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    $end = $EndTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    return "$TableName | where TimeGenerated >= datetime($start) and TimeGenerated < datetime($end) | count"
 }
 
 function Get-LogQueryExecutionMode {
