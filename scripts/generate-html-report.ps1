@@ -162,7 +162,8 @@ function New-TableHtml {
     param(
         [object[]]$Rows,
         [string[]]$Columns,
-        [scriptblock]$CellBuilder
+        [scriptblock]$CellBuilder,
+        [string[]]$RawHtmlColumns = @()
     )
 
     if (-not $Rows -or @($Rows).Count -eq 0) {
@@ -175,7 +176,16 @@ function New-TableHtml {
     foreach ($row in $Rows) {
         $html += '<tr>'
         $cells = & $CellBuilder $row
-        foreach ($cell in $cells) { $html += '<td>' + (Escape-Html $cell) + '</td>' }
+        $cellIndex = 0
+        foreach ($cell in $cells) {
+            $colName = if ($cellIndex -lt $Columns.Count) { $Columns[$cellIndex] } else { '' }
+            if ($colName -in $RawHtmlColumns) {
+                $html += '<td>' + $cell + '</td>'
+            } else {
+                $html += '<td>' + (Escape-Html $cell) + '</td>'
+            }
+            $cellIndex++
+        }
         $html += '</tr>'
     }
     $html += '</tbody></table></div>'
@@ -455,8 +465,9 @@ function Confirm-LicenseGraphVerification {
     }
 }
 
-function Get-GraphAuthCodeTokenCandidate {
+function Get-LicenseFromMgGraph {
     param(
+        [string]$ClientId = '5bbea6de-1297-488f-aff5-9b55f4c61c3e',
         [string]$TenantId = '420c4dab-8603-402f-afe0-75bc28c51c13'
     )
 
@@ -464,65 +475,81 @@ function Get-GraphAuthCodeTokenCandidate {
         throw '用户选择跳过 Microsoft Graph License API 验证。'
     }
 
-    # 使用指定的 AppID 和 TenantID (21v 中国版)
-    # AppID: 5bbea6de-1297-488f-aff5-9b55f4c61c3e
-    # TenantID: 420c4dab-8603-402f-afe0-75bc28c51c13
-    # 应用需要具有以下 API 权限（管理员同意）：
-    # - Microsoft Graph -> Application -> Organization.Read.All
-    # 重定向 URI 需要配置为: http://localhost
-    $clientIds = @(
-        '5bbea6de-1297-488f-aff5-9b55f4c61c3e'
-    )
-    
-    # 中国版 Microsoft Graph (21v) 端点
-    $loginBase = 'https://login.chinacloudapi.cn'
-    $graphResource = 'https://microsoftgraph.chinacloudapi.cn'
-    $graphScope = "$graphResource/Organization.Read.All"
-    $endpoint = "$graphResource/v1.0/subscribedSkus"
-    $tenant = if ([string]::IsNullOrWhiteSpace($TenantId)) { 'common' } else { $TenantId }
-
-    # 尝试使用 MSAL.PS 进行 AuthCodeFlow 登录
-    if (-not (Get-Module -ListAvailable -Name MSAL.PS)) {
+    # 检查并安装 Microsoft.Graph.Authentication 模块
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
         try {
-            Install-Module -Name MSAL.PS -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-            Import-Module -Name MSAL.PS -Force -ErrorAction Stop
+            Write-Host '正在安装 Microsoft.Graph.Authentication 模块...' -ForegroundColor Cyan
+            Install-Module -Name Microsoft.Graph.Authentication -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
         } catch {
-            throw "无法安装/导入 MSAL.PS 模块：$($_.Exception.Message)"
+            throw "无法安装 Microsoft.Graph.Authentication 模块：$($_.Exception.Message)"
         }
     }
-    if (-not (Get-Module -Name MSAL.PS)) {
-        Import-Module -Name MSAL.PS -ErrorAction Stop
-    }
+    Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
 
-    $errors = [System.Collections.Generic.List[string]]::new()
-    foreach ($clientId in $clientIds) {
+    # 检查并安装 Microsoft.Graph.Identity.DirectoryManagement 模块（包含 Get-MgSubscribedSku）
+    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Identity.DirectoryManagement)) {
         try {
-            Write-Host ''
-            Write-Host '=== Microsoft Graph License API Login Required (AuthCodeFlow - 21v China) ===' -ForegroundColor Yellow
-            Write-Host "正在使用 ClientId: $clientId" -ForegroundColor Cyan
-            Write-Host '正在打开浏览器进行登录... 请使用浏览器完成认证。' -ForegroundColor Cyan
-            Write-Host "登录地址: $loginBase" -ForegroundColor Gray
-            Write-Host "Graph 端点: $graphResource" -ForegroundColor Gray
-
-            $token = Get-MsalToken `
-                -ClientId $clientId `
-                -TenantId $tenant `
-                -Authority "$loginBase/$tenant" `
-                -Scopes $graphScope `
-                -RedirectUri "http://localhost" `
-                -Interactive
-
-            if ($token.AccessToken) {
-                Write-Host 'Microsoft Graph AuthCodeFlow (21v China) 登录成功。' -ForegroundColor Green
-                return [PSCustomObject]@{ Source = 'AuthCode:ChinaGraph(21v)'; Endpoint = $endpoint; Token = $token.AccessToken }
-            }
+            Write-Host '正在安装 Microsoft.Graph.Identity.DirectoryManagement 模块...' -ForegroundColor Cyan
+            Install-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
         } catch {
-            $errors.Add("ClientId $clientId`: $($_.Exception.Message)") | Out-Null
-            Write-Host "ClientId $clientId 失败: $($_.Exception.Message)" -ForegroundColor Red
+            throw "无法安装 Microsoft.Graph.Identity.DirectoryManagement 模块：$($_.Exception.Message)"
         }
     }
+    Import-Module Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction Stop
 
-    throw "无法通过 AuthCodeFlow (21v China) 获取 Microsoft Graph 访问令牌。$($errors -join '；')"
+    try {
+        Write-Host ''
+        Write-Host '=== Microsoft Graph License API Login Required (MgGraph - 21v China) ===' -ForegroundColor Yellow
+        Write-Host "ClientId: $ClientId" -ForegroundColor Cyan
+        Write-Host "TenantId: $TenantId" -ForegroundColor Cyan
+        Write-Host 'Environment: China (21v)' -ForegroundColor Cyan
+        Write-Host '正在打开浏览器进行登录... 请使用浏览器完成认证。' -ForegroundColor Cyan
+
+        # 使用 Connect-MgGraph 连接中国版 Graph
+        Connect-MgGraph -Environment China -ClientId $ClientId -TenantId $TenantId -ErrorAction Stop
+
+        Write-Host 'Microsoft Graph (21v China) 登录成功。' -ForegroundColor Green
+
+        # 获取所有 License 信息
+        $skus = Get-MgSubscribedSku -All -ErrorAction Stop
+
+        $skuList = [System.Collections.Generic.List[object]]::new()
+        foreach ($sku in $skus) {
+            # 总数 = Enabled + Warning + Suspended (所有可用的许可证单元)
+            $enabled = if ($null -ne $sku.PrepaidUnits.Enabled) { [int]$sku.PrepaidUnits.Enabled } else { 0 }
+            $warning = if ($null -ne $sku.PrepaidUnits.Warning) { [int]$sku.PrepaidUnits.Warning } else { 0 }
+            $suspended = if ($null -ne $sku.PrepaidUnits.Suspended) { [int]$sku.PrepaidUnits.Suspended } else { 0 }
+            $total = $enabled + $warning + $suspended
+            
+            $consumed = if ($null -ne $sku.ConsumedUnits) { [int]$sku.ConsumedUnits } else { 0 }
+            $remaining = [Math]::Max(0, $total - $consumed)
+
+            Write-Host "  License: $($sku.SkuPartNumber) | Total: $total (Enabled: $enabled, Warning: $warning, Suspended: $suspended) | Consumed: $consumed | Remaining: $remaining" -ForegroundColor Gray
+
+            $skuList.Add([PSCustomObject]@{
+                License = $sku.SkuPartNumber
+                Total = $total
+                Enabled = $enabled
+                ConsumedUnits = $consumed
+                Warning = $warning
+                Suspended = $suspended
+                Remaining = $remaining
+            }) | Out-Null
+        }
+
+        # 断开连接
+        Disconnect-MgGraph -ErrorAction SilentlyContinue
+
+        return [PSCustomObject]@{
+            Success = $true
+            Message = "License 总量已通过 Microsoft Graph (21v China) Get-MgSubscribedSku 获取。"
+            SkuList = $skuList.ToArray()
+        }
+    } catch {
+        # 确保断开连接
+        Disconnect-MgGraph -ErrorAction SilentlyContinue
+        throw "无法通过 Microsoft Graph (21v China) 获取 License 信息：$($_.Exception.Message)"
+    }
 }
 
 function Get-GraphDeviceCodeTokenCandidate {
@@ -661,6 +688,43 @@ function Get-LicenseSkuTotalsFromGraph {
     }
 
     try {
+        # 优先使用 Microsoft Graph PowerShell SDK (Connect-MgGraph + Get-MgSubscribedSku)
+        $mgResult = Get-LicenseFromMgGraph
+        if ($mgResult.Success) {
+            $map = @{}
+            $skuList = [System.Collections.Generic.List[object]]::new()
+            foreach ($sku in $mgResult.SkuList) {
+                $name = [string]$sku.License
+                if ([string]::IsNullOrWhiteSpace($name)) { continue }
+                $skuRecord = [PSCustomObject]@{
+                    License = $name
+                    Used = $sku.ConsumedUnits
+                    Total = $sku.Total
+                    Warning = $sku.Warning
+                    Suspended = $sku.Suspended
+                    Remaining = $sku.Remaining
+                }
+                $skuList.Add($skuRecord) | Out-Null
+                $map[$name.ToUpperInvariant()] = $skuRecord
+                $normalizedName = Normalize-LicenseKey -Name $name
+                if ($normalizedName) {
+                    $map[$normalizedName] = $skuRecord
+                }
+            }
+            if ($skuList.Count -eq 0) { throw 'Microsoft Graph Get-MgSubscribedSku 未返回任何许可证 SKU。' }
+            $result.Success = $true
+            $result.Message = $mgResult.Message
+            $result.Skus = $map
+            $result.SkuList = $skuList.ToArray()
+            return $result
+        }
+    } catch {
+        # MgGraph 失败，继续尝试其他方式
+        Write-Host "MgGraph 方式失败: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+    # 回退到 REST API 方式
+    try {
         $tokenCandidates = Get-GraphAccessTokenCandidates
         if ($tokenCandidates.Candidates.Count -eq 0) {
             throw "未能获取 Microsoft Graph 访问令牌。$($tokenCandidates.Errors -join '；')"
@@ -713,7 +777,7 @@ function Get-LicenseSkuTotalsFromGraph {
         }
         if ($skuList.Count -eq 0) { throw 'Microsoft Graph subscribedSkus 未返回任何许可证 SKU。' }
         $result.Success = $true
-        $result.Message = "License 总量已通过 Microsoft Graph subscribedSkus 获取。"
+        $result.Message = "License 总量已通过 Microsoft Graph subscribedSkus REST API 获取。"
         $result.Skus = $map
         $result.SkuList = $skuList.ToArray()
         return $result
@@ -874,77 +938,128 @@ foreach ($dataset in $datasets) {
     }
 }
 
-# License usage: infer the four license names from the data, then use Graph subscribedSkus when log totals are missing.
-$licenseRows = @($datasets | Where-Object { $_.Table -eq 'AssignedLicensesDCR_CL' } | ForEach-Object { $_.Rows })
-$licenseGroups = @{}
-foreach ($row in $licenseRows) {
-    $licenseName = Get-AnyFieldValue -Row $row -Names @('SkuPartNumber', 'LicenseName', 'SkuDisplayName', 'ServicePlanName', 'AssignedLicenses', 'Licenses') -Default 'Unknown License'
-    if (-not $licenseGroups.ContainsKey($licenseName)) {
-        $licenseGroups[$licenseName] = [PSCustomObject]@{
-            Name = $licenseName
-            Users = @{}
-            Rows = 0
-            Total = $null
-            UsedOverride = $null
-        }
-    }
-    $group = $licenseGroups[$licenseName]
-    $group.Rows++
-    $usedUsers = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('UsedUsers', 'Used') -Default '')
-    if ($null -ne $usedUsers) {
-        if ($null -eq $group.UsedOverride -or $usedUsers -gt $group.UsedOverride) {
-            $group.UsedOverride = [int]$usedUsers
-        }
-    }
-    $user = Get-UserValue -Row $row -TableName 'AssignedLicensesDCR_CL'
-    if ($user) { $group.Users[$user.ToLowerInvariant()] = 1 }
-    $total = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('TotalLicenses', 'TotalUnits', 'PrepaidUnitsEnabled', 'SkuPrepaidUnitsEnabled', 'EnabledUnits', 'Enabled') -Default '')
-    if ($null -ne $total) {
-        if ($null -eq $group.Total -or $total -gt $group.Total) { $group.Total = $total }
-    }
-}
-$licenseUsage = @(
-    $licenseGroups.Values |
-        Sort-Object @{ Expression = { if ($null -ne $_.UsedOverride) { $_.UsedOverride } else { $_.Users.Count } }; Descending = $true }, @{ Expression = { $_.Rows }; Descending = $true } |
-        Select-Object -First 4 |
-        ForEach-Object {
-            $used = if ($null -ne $_.UsedOverride) { $_.UsedOverride } elseif ($_.Users.Count -gt 0) { $_.Users.Count } else { $_.Rows }
-            $remaining = if ($null -ne $_.Total) { [Math]::Max(0, [int]$_.Total - [int]$used) } else { 'N/A' }
-            [PSCustomObject]@{ License = $_.Name; Used = $used; Total = $(if ($null -ne $_.Total) { [int]$_.Total } else { 'N/A' }); Remaining = $remaining; Source = $(if ($null -ne $_.Total) { 'Log' } else { 'Pending' }) }
-        }
-)
-$licenseStatusNote = 'License 使用量优先使用 AssignedLicensesDCR_CL；若日志缺少总量或剩余量，会尝试调用 Microsoft Graph subscribedSkus 获取，并支持按 servicePlans[].servicePlanName 映射。'
-$licensesNeedGraph = @($licenseUsage | Where-Object { Test-LicenseMetricMissing -License $_ })
-if ($licensesNeedGraph.Count -gt 0 -or $licenseUsage.Count -eq 0) {
-    $graphLicenseResult = Get-LicenseSkuTotalsFromGraph
-    if ($graphLicenseResult.Success) {
-        if ($licenseUsage.Count -eq 0) {
-            $licenseUsage = @(
-                $graphLicenseResult.SkuList |
-                    Where-Object { $null -ne $_.Total -and $_.Total -gt 0 } |
-                    Sort-Object @{ Expression = { if ($null -ne $_.Used) { $_.Used } else { 0 } }; Descending = $true }, License |
-                    Select-Object -First 4 |
-                    ForEach-Object {
-                        [PSCustomObject]@{ License = $_.License; Used = $_.Used; Total = $_.Total; Remaining = $_.Remaining; Source = 'Graph' }
-                    }
-            )
-        }
+# License usage: 优先使用 Microsoft Graph API 获取 License 列表，然后从日志中获取使用量
+$licenseStatusNote = 'License 列表优先使用 Microsoft Graph subscribedSkus 获取（SkuPartNumber 更准确）；使用量优先从 AssignedLicensesDCR_CL 日志获取。'
 
-        foreach ($license in $licenseUsage) {
-            $keys = @(([string]$license.License).ToUpperInvariant(), (Normalize-LicenseKey -Name ([string]$license.License))) | Where-Object { $_ } | Select-Object -Unique
-            $matchedKey = @($keys | Where-Object { $graphLicenseResult.Skus.ContainsKey($_) } | Select-Object -First 1)
-            if ($matchedKey.Count -gt 0) {
-                $sku = $graphLicenseResult.Skus[$matchedKey[0]]
-                if ($null -ne $sku.Used) { $license.Used = $sku.Used }
-                if ($null -ne $sku.Total) { $license.Total = $sku.Total }
-                if ($null -ne $sku.Remaining) { $license.Remaining = $sku.Remaining }
-                $license.Source = 'Graph'
-            } elseif ($license.Total -eq 'N/A') {
-                $license.Source = 'Missing'
+# 首先尝试从 Graph API 获取 License 列表
+$graphLicenseResult = Get-LicenseSkuTotalsFromGraph
+$licenseUsage = @()
+
+if ($graphLicenseResult.Success) {
+    # 从日志中获取使用量映射
+    $licenseRows = @($datasets | Where-Object { $_.Table -eq 'AssignedLicensesDCR_CL' } | ForEach-Object { $_.Rows })
+    $logUsageMap = @{}
+    foreach ($row in $licenseRows) {
+        $licenseName = Get-AnyFieldValue -Row $row -Names @('SkuPartNumber', 'LicenseName', 'SkuDisplayName', 'ServicePlanName', 'AssignedLicenses', 'Licenses') -Default 'Unknown License'
+        $user = Get-UserValue -Row $row -TableName 'AssignedLicensesDCR_CL'
+        $usedUsers = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('UsedUsers', 'Used') -Default '')
+        
+        $normalizedLogName = Normalize-LicenseKey -Name $licenseName
+        if (-not $logUsageMap.ContainsKey($normalizedLogName)) {
+            $logUsageMap[$normalizedLogName] = [PSCustomObject]@{
+                Users = @{}
+                UsedOverride = $null
+            }
+        }
+        $mapEntry = $logUsageMap[$normalizedLogName]
+        if ($user) { $mapEntry.Users[$user.ToLowerInvariant()] = 1 }
+        if ($null -ne $usedUsers) {
+            if ($null -eq $mapEntry.UsedOverride -or $usedUsers -gt $mapEntry.UsedOverride) {
+                $mapEntry.UsedOverride = [int]$usedUsers
             }
         }
     }
+    
+    # 使用 Graph API 的 SkuList，取前 4 个
+    $licenseUsage = @(
+        $graphLicenseResult.SkuList |
+            Where-Object { $null -ne $_.Total -and $_.Total -gt 0 } |
+            Sort-Object @{ Expression = { if ($null -ne $_.Used) { $_.Used } else { 0 } }; Descending = $true }, License |
+            Select-Object -First 4 |
+            ForEach-Object {
+                $graphSkuName = [string]$_.License
+                $normalizedGraphName = Normalize-LicenseKey -Name $graphSkuName
+                $graphConsumed = if ($null -ne $_.Used) { [int]$_.Used } else { 0 }
+                $graphTotal = if ($null -ne $_.Total) { [int]$_.Total } else { 0 }
+                
+                # 优先使用 Graph API 的 ConsumedUnits 作为已分配数
+                $used = $graphConsumed
+                $total = $graphTotal
+                
+                # 尝试从日志中精确匹配使用量（仅用于验证）
+                $logUsed = $null
+                if ($logUsageMap.ContainsKey($normalizedGraphName)) {
+                    $logEntry = $logUsageMap[$normalizedGraphName]
+                    $logUsed = if ($null -ne $logEntry.UsedOverride) { $logEntry.UsedOverride } elseif ($logEntry.Users.Count -gt 0) { $logEntry.Users.Count } else { $null }
+                    Write-Host "  License $graphSkuName : 日志匹配 $normalizedGraphName, 日志使用量=$logUsed, Graph Consumed=$graphConsumed, Graph Total=$graphTotal" -ForegroundColor Gray
+                } else {
+                    Write-Host "  License $graphSkuName : 无日志匹配, 使用 Graph Consumed=$graphConsumed, Graph Total=$graphTotal" -ForegroundColor Yellow
+                }
+                
+                # 如果日志使用量可用且大于 Graph Consumed，使用日志值
+                if ($null -ne $logUsed -and $logUsed -gt $used) {
+                    $used = $logUsed
+                }
+                
+                # 合理性检查：如果 Used > Total，将 Total 调整为 Used
+                if ($used -gt $total) {
+                    Write-Host "  警告: License $graphSkuName Used($used) > Total($total), 调整 Total=$used" -ForegroundColor Yellow
+                    $total = $used
+                }
+                
+                $remaining = [Math]::Max(0, $total - $used)
+                
+                [PSCustomObject]@{ 
+                    License = $graphSkuName
+                    Used = $used
+                    Total = $total
+                    Remaining = $remaining
+                    Source = 'Graph'
+                }
+            }
+    )
     $licenseStatusNote = "$licenseStatusNote $($graphLicenseResult.Message)"
+} else {
+    # Graph API 失败，回退到日志数据
+    $licenseRows = @($datasets | Where-Object { $_.Table -eq 'AssignedLicensesDCR_CL' } | ForEach-Object { $_.Rows })
+    $licenseGroups = @{}
+    foreach ($row in $licenseRows) {
+        $licenseName = Get-AnyFieldValue -Row $row -Names @('SkuPartNumber', 'LicenseName', 'SkuDisplayName', 'ServicePlanName', 'AssignedLicenses', 'Licenses') -Default 'Unknown License'
+        if (-not $licenseGroups.ContainsKey($licenseName)) {
+            $licenseGroups[$licenseName] = [PSCustomObject]@{
+                Name = $licenseName
+                Users = @{}
+                Rows = 0
+                Total = $null
+                UsedOverride = $null
+            }
+        }
+        $group = $licenseGroups[$licenseName]
+        $group.Rows++
+        $usedUsers = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('UsedUsers', 'Used') -Default '')
+        if ($null -ne $usedUsers) {
+            if ($null -eq $group.UsedOverride -or $usedUsers -gt $group.UsedOverride) {
+                $group.UsedOverride = [int]$usedUsers
+            }
+        }
+        $user = Get-UserValue -Row $row -TableName 'AssignedLicensesDCR_CL'
+        if ($user) { $group.Users[$user.ToLowerInvariant()] = 1 }
+        $total = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('TotalLicenses', 'TotalUnits', 'PrepaidUnitsEnabled', 'SkuPrepaidUnitsEnabled', 'EnabledUnits', 'Enabled') -Default '')
+        if ($null -ne $total) {
+            if ($null -eq $group.Total -or $total -gt $group.Total) { $group.Total = $total }
+        }
+    }
+    $licenseUsage = @(
+        $licenseGroups.Values |
+            Sort-Object @{ Expression = { if ($null -ne $_.UsedOverride) { $_.UsedOverride } else { $_.Users.Count } }; Descending = $true }, @{ Expression = { $_.Rows }; Descending = $true } |
+            Select-Object -First 4 |
+            ForEach-Object {
+                $used = if ($null -ne $_.UsedOverride) { $_.UsedOverride } elseif ($_.Users.Count -gt 0) { $_.Users.Count } else { $_.Rows }
+                $remaining = if ($null -ne $_.Total) { [Math]::Max(0, [int]$_.Total - [int]$used) } else { 'N/A' }
+                [PSCustomObject]@{ License = $_.Name; Used = $used; Total = $(if ($null -ne $_.Total) { [int]$_.Total } else { 'N/A' }); Remaining = $remaining; Source = $(if ($null -ne $_.Total) { 'Log' } else { 'Pending' }) }
+            }
+    )
+    $licenseStatusNote = "$licenseStatusNote Graph API 不可用，已回退到日志数据。$($graphLicenseResult.Message)"
 }
 
 $unresolvedLicenses = @($licenseUsage | Where-Object { Test-LicenseMetricMissing -License $_ })
@@ -1150,9 +1265,49 @@ $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-T
 $topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
 })
-$licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseUsage -Columns @('License 名称', '已使用', '总数', '剩余', '来源') -CellBuilder {
-    param($r) @($r.License, $r.Used, $r.Total, $r.Remaining, $r.Source)
-})
+# License 产品名称映射
+$licenseProductMap = @{
+    'AAD_PREMIUM_P2_CN' = 'Microsoft Entra ID P2 (中国版)'
+    'POWER_BI_PRO' = 'Power BI Pro'
+    'SPE_E3_NO_WIN' = 'Office 365 E3 (不含Windows)'
+    'EXCHANGEENTERPRISE' = 'Exchange Online Enterprise'
+}
+
+# License 状态判断函数
+function Get-LicenseStatus {
+    param([int]$Remaining)
+    if ($Remaining -eq 0) {
+        return '<span style="color:#ff6b6b;">🔴 已耗尽</span>'
+    } elseif ($Remaining -lt 5) {
+        return '<span style="color:#f3b95f;">⚠️ 即将耗尽</span>'
+    } else {
+        return '<span style="color:#66d98f;">✅ 充足</span>'
+    }
+}
+
+# 构建 License 表格行
+$licenseTableRows = @(
+    foreach ($license in $licenseUsage) {
+        $skuPartNumber = [string]$license.License
+        $productName = if ($licenseProductMap.ContainsKey($skuPartNumber)) { $licenseProductMap[$skuPartNumber] } else { $skuPartNumber }
+        $total = if ($null -ne $license.Total -and $license.Total -ne 'N/A') { [int]$license.Total } else { 0 }
+        $used = if ($null -ne $license.Used) { [int]$license.Used } else { 0 }
+        $remaining = if ($null -ne $license.Remaining -and $license.Remaining -ne 'N/A') { [int]$license.Remaining } else { 0 }
+        $status = Get-LicenseStatus -Remaining $remaining
+        [PSCustomObject]@{
+            SkuPartNumber = $skuPartNumber
+            ProductName = $productName
+            Total = $total
+            Used = $used
+            Remaining = $remaining
+            Status = $status
+        }
+    }
+)
+
+$licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseTableRows -Columns @('SkuPartNumber', '产品名称', '总数', '已分配', '剩余', '状态') -CellBuilder {
+    param($r) @($r.SkuPartNumber, $r.ProductName, $r.Total, $r.Used, $r.Remaining, $r.Status)
+} -RawHtmlColumns @('状态'))
 $mailboxRiskKql = "MailboxStatisticsDCR_CL`r`n| where AvailableSpaceGB < QuotaLimitGB * 0.05`r`n| extend UsagePercent = round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2)`r`n| project TimeGenerated, DisplayName, AvailableSpaceGB, QuotaLimitGB, UsagePercent"
 $mailboxRiskHtml = (New-CodeBlockHtml -Text $mailboxRiskKql) + (New-TableHtml -Rows ($mailboxRisks | Sort-Object AvailableGB | Select-Object -First 50) -Columns @('邮箱', 'AvailableSpaceGB', 'QuotaLimitGB', '使用率', '风险') -CellBuilder {
     param($r) @($r.User, $r.AvailableGB, $r.QuotaGB, $r.Usage, $r.Reason)

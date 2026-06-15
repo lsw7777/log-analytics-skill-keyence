@@ -225,6 +225,14 @@ function Invoke-LogQuery {
     catch {
         Write-Host "`nQuery failed!" -ForegroundColor Red
 
+        # 显示完整的查询语句以便调试
+        Write-Host "`n=== Query Debug Info ===" -ForegroundColor Yellow
+        Write-Host "Table: $TableName" -ForegroundColor Yellow
+        Write-Host "Query length: $($Query.Length) characters" -ForegroundColor Yellow
+        Write-Host "`n--- Full Query ---" -ForegroundColor Yellow
+        Write-Host $Query -ForegroundColor Gray
+        Write-Host "--- End Query ---" -ForegroundColor Yellow
+
         if ($_.Exception.Message -match "401") {
             Write-Host "Status code: 401 (Authentication failed)" -ForegroundColor Red
             Write-Host "`n=== 401 Troubleshooting ===" -ForegroundColor Yellow
@@ -239,6 +247,14 @@ function Invoke-LogQuery {
             Write-Host "   - Subscription: Reader at minimum"
             Write-Host "   - Resource group: Reader at minimum"
             Write-Host "   - Workspace: Log Analytics Reader"
+        }
+        elseif ($_.Exception.Message -match "BadRequest|400") {
+            Write-Host "Status code: 400 (Bad Request - Query syntax error)" -ForegroundColor Red
+            Write-Host "`n=== 400 Troubleshooting ===" -ForegroundColor Yellow
+            Write-Host "1. Check if the table exists in the workspace"
+            Write-Host "2. Verify column names in the query match the table schema"
+            Write-Host "3. Try running a simple query first: $TableName | take 10"
+            Write-Host "4. Check for KQL syntax errors in the query above"
         }
         else {
             Write-Host $_.Exception.Message -ForegroundColor Red
