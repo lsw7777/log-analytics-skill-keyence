@@ -891,9 +891,8 @@ $TableName
 | extend ResultType = case(isnotempty(ResultSignature), ResultSignature, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
 | extend ResultDescription = case(isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, isnotempty(__FailureReasonRaw), __FailureReasonRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ConditionalAccessStatusRaw), __ConditionalAccessStatusRaw, "")
 | extend __status = tolower(ResultType)
-| extend __resultCode = tolong(ResultType)
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIps)
@@ -1058,11 +1057,10 @@ function New-DcrLogErrorsOptimizedQuery {
 
     return @"
 DCRLogErrors
-| where TimeGenerated > ago(30d)
-| distinct InputStreamId, OperationName, Message
-| extend TimeGenerated=now(), LastTime="", EventCount=1
+| where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message
 | extend Status="Failed", __RecordKind="AggregatedDcrLogError"
-| project TimeGenerated, LastTime, EventCount, InputStreamId, OperationName, Message, Status, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, InputStreamId, OperationName, Message, Status, __RecordKind
 "@
 }
 
@@ -1075,8 +1073,8 @@ function New-IntuneAuditLogsOptimizedQuery {
     return @"
 IntuneAuditLogsDCR_CL
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend ActorDisplayName = tostring(coalesce(column_ifexists("ActorDisplayName", ""), column_ifexists("ActorDisplayName_s", ""), column_ifexists("DisplayName", ""), column_ifexists("DisplayName_s", ""), column_ifexists("InitiatedByUserDisplayName", ""), column_ifexists("InitiatedByUserDisplayName_s", ""), column_ifexists("UserDisplayName", ""), column_ifexists("UserDisplayName_s", ""), ""))
-| extend ActorUserPrincipalName = tostring(coalesce(column_ifexists("ActorUPN", ""), column_ifexists("ActorUPN_s", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName_s", ""), column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("InitiatedByUserPrincipalName_s", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserPrincipalName_s", ""), column_ifexists("UPN", ""), column_ifexists("UPN_s", ""), column_ifexists("Actor", ""), column_ifexists("Actor_s", ""), column_ifexists("UserId", ""), column_ifexists("UserId_s", ""), column_ifexists("Identity", ""), column_ifexists("Identity_s", ""), "Unknown"))
+| extend ActorDisplayName = tostring(coalesce(column_ifexists("InitiatorDisplayName", ""), column_ifexists("InitiatorDisplayName_s", ""), column_ifexists("ActorDisplayName", ""), column_ifexists("ActorDisplayName_s", ""), column_ifexists("DisplayName", ""), column_ifexists("DisplayName_s", ""), column_ifexists("InitiatedByUserDisplayName", ""), column_ifexists("InitiatedByUserDisplayName_s", ""), column_ifexists("UserDisplayName", ""), column_ifexists("UserDisplayName_s", ""), ""))
+| extend ActorUserPrincipalName = tostring(coalesce(column_ifexists("InitiatorUserPrincipalName", ""), column_ifexists("InitiatorUserPrincipalName_s", ""), column_ifexists("ActorInitiator", ""), column_ifexists("ActorUPN", ""), column_ifexists("ActorUPN_s", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName_s", ""), column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("InitiatedByUserPrincipalName_s", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserPrincipalName_s", ""), column_ifexists("UPN", ""), column_ifexists("UPN_s", ""), column_ifexists("Actor", ""), column_ifexists("Actor_s", ""), column_ifexists("UserId", ""), column_ifexists("UserId_s", ""), column_ifexists("Identity", ""), column_ifexists("Identity_s", ""), "Unknown"))
 | extend Actor = iff(isnotempty(ActorDisplayName) and ActorDisplayName != ActorUserPrincipalName, strcat(ActorDisplayName, " / ", ActorUserPrincipalName), ActorUserPrincipalName)
 | extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("OperationName_s", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("ActivityDisplayName_s", ""), column_ifexists("Activity", ""), column_ifexists("Activity_s", ""), column_ifexists("Operation", ""), column_ifexists("Operation_s", ""), column_ifexists("Action", ""), column_ifexists("Action_s", ""), column_ifexists("AuditEventType", ""), column_ifexists("AuditEventType_s", ""), "Intune Audit Event"))
 | extend TargetDisplayName = tostring(coalesce(column_ifexists("TargetDisplayName", ""), column_ifexists("TargetDisplayName_s", ""), column_ifexists("Target", ""), column_ifexists("Target_s", ""), column_ifexists("ObjectId", ""), column_ifexists("ObjectId_s", ""), column_ifexists("ResourceDisplayName", ""), column_ifexists("ResourceDisplayName_s", ""), column_ifexists("DeviceName", ""), column_ifexists("DeviceName_s", ""), column_ifexists("ManagedDeviceName", ""), column_ifexists("ManagedDeviceName_s", ""), ""))

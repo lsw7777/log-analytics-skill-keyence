@@ -184,7 +184,7 @@ function New-TableHtml {
 
 function New-CodeBlockHtml {
     param([string]$Text)
-    return '<pre class="kql-block"><code>' + (Escape-Html $Text) + '</code></pre>'
+    return '<details class="kql-block"><summary>KQL 语句</summary><code>' + (Escape-Html $Text) + '</code></details>'
 }
 
 function Get-TimeValueForSort {
@@ -464,14 +464,21 @@ function Get-GraphAuthCodeTokenCandidate {
         throw '用户选择跳过 Microsoft Graph License API 验证。'
     }
 
+    # 使用指定的 AppID 和 TenantID (21v 中国版)
+    # AppID: 5bbea6de-1297-488f-aff5-9b55f4c61c3e
+    # TenantID: 420c4dab-8603-402f-afe0-75bc28c51c13
+    # 应用需要具有以下 API 权限（管理员同意）：
+    # - Microsoft Graph -> Application -> Organization.Read.All
+    # 重定向 URI 需要配置为: http://localhost
     $clientIds = @(
-        '14d82eec-204b-4c2f-b7e8-296a70dab67e',
-        '0be339b1-54ca-403c-b59d-b2938d2d1be5
-'
+        '5bbea6de-1297-488f-aff5-9b55f4c61c3e'
     )
+    
+    # 中国版 Microsoft Graph (21v) 端点
     $loginBase = 'https://login.chinacloudapi.cn'
-    $graphScope = 'https://microsoftgraph.chinacloudapi.cn/Organization.Read.All offline_access'
-    $endpoint = 'https://microsoftgraph.chinacloudapi.cn/v1.0/subscribedSkus'
+    $graphResource = 'https://microsoftgraph.chinacloudapi.cn'
+    $graphScope = "$graphResource/Organization.Read.All"
+    $endpoint = "$graphResource/v1.0/subscribedSkus"
     $tenant = if ([string]::IsNullOrWhiteSpace($TenantId)) { 'common' } else { $TenantId }
 
     # 尝试使用 MSAL.PS 进行 AuthCodeFlow 登录
@@ -491,27 +498,31 @@ function Get-GraphAuthCodeTokenCandidate {
     foreach ($clientId in $clientIds) {
         try {
             Write-Host ''
-            Write-Host '=== Microsoft Graph License API Login Required (AuthCodeFlow) ===' -ForegroundColor Yellow
+            Write-Host '=== Microsoft Graph License API Login Required (AuthCodeFlow - 21v China) ===' -ForegroundColor Yellow
+            Write-Host "正在使用 ClientId: $clientId" -ForegroundColor Cyan
             Write-Host '正在打开浏览器进行登录... 请使用浏览器完成认证。' -ForegroundColor Cyan
+            Write-Host "登录地址: $loginBase" -ForegroundColor Gray
+            Write-Host "Graph 端点: $graphResource" -ForegroundColor Gray
 
             $token = Get-MsalToken `
                 -ClientId $clientId `
                 -TenantId $tenant `
                 -Authority "$loginBase/$tenant" `
-                -Scopes $graphScope.Split(' ') `
+                -Scopes $graphScope `
                 -RedirectUri "http://localhost" `
                 -Interactive
 
             if ($token.AccessToken) {
-                Write-Host 'Microsoft Graph AuthCodeFlow 登录成功。' -ForegroundColor Green
-                return [PSCustomObject]@{ Source = 'AuthCode:ChinaGraph'; Endpoint = $endpoint; Token = $token.AccessToken }
+                Write-Host 'Microsoft Graph AuthCodeFlow (21v China) 登录成功。' -ForegroundColor Green
+                return [PSCustomObject]@{ Source = 'AuthCode:ChinaGraph(21v)'; Endpoint = $endpoint; Token = $token.AccessToken }
             }
         } catch {
             $errors.Add("ClientId $clientId`: $($_.Exception.Message)") | Out-Null
+            Write-Host "ClientId $clientId 失败: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
 
-    throw "无法通过 AuthCodeFlow 获取 Microsoft Graph 访问令牌。$($errors -join '；')"
+    throw "无法通过 AuthCodeFlow (21v China) 获取 Microsoft Graph 访问令牌。$($errors -join '；')"
 }
 
 function Get-GraphDeviceCodeTokenCandidate {
@@ -630,17 +641,11 @@ function Get-GraphAccessTokenCandidates {
     }
 
     if ($candidates.Count -eq 0) {
-        # 优先尝试 AuthCodeFlow（中国版），失败后回退到 DeviceCodeFlow
+        # 只使用 AuthCodeFlow（中国版 21v），不再回退到 DeviceCodeFlow
         try {
             $candidates.Add((Get-GraphAuthCodeTokenCandidate)) | Out-Null
         } catch {
-            $errors.Add("AuthCode ChinaGraph: $($_.Exception.Message)") | Out-Null
-            Write-Host "AuthCodeFlow 失败，回退到 DeviceCodeFlow...`n" -ForegroundColor Yellow
-            try {
-                $candidates.Add((Get-GraphDeviceCodeTokenCandidate)) | Out-Null
-            } catch {
-                $errors.Add("DeviceCode ChinaGraph: $($_.Exception.Message)") | Out-Null
-            }
+            $errors.Add("AuthCode ChinaGraph (21v): $($_.Exception.Message)") | Out-Null
         }
     }
 
@@ -1183,7 +1188,7 @@ $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distin
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('InputStreamId', 'OperationName', 'Message') -CellBuilder {
     param($r) @($r.Target, $r.Operation, $r.Detail)
 })
-$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
+$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.Detail)" }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
@@ -1208,9 +1213,28 @@ $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'source-status'; Title = '数据源查询状态'; Note = '显示本次参与生成合并报告的 CSV 数据源。'; Content = $sourceStatusHtml; Open = $false }
 )
 
+# 定义二级分类目录结构
+$categoryOrder = @(
+    [PSCustomObject]@{ Key = 'login-security'; Label = '登录与身份安全'; Icon = '🔐'; Sections = @('suspicious-success', 'suspicious-ip', 'client-ip-rank', 'failed-signins') },
+    [PSCustomObject]@{ Key = 'operation-audit'; Label = '操作审计'; Icon = '📋'; Sections = @('identity-permission', 'delete-disable', 'failed-ops') },
+    [PSCustomObject]@{ Key = 'mailbox'; Label = '邮箱安全'; Icon = '📧'; Sections = @('mailbox-low-space', 'shared-mailbox') },
+    [PSCustomObject]@{ Key = 'data-source'; Label = '数据源与许可证'; Icon = '💾'; Sections = @('dcr-log-errors', 'intune-audit', 'license', 'source-status') }
+)
+
+# 构建二级目录 HTML（使用 details/summary 实现一级分类折叠）
 $sideNavHtml = '<nav class="side-nav"><div class="nav-title">目录</div>'
-foreach ($section in $sectionSpecs) {
-    $sideNavHtml += '<a href="#' + (Escape-Html $section.Id) + '">' + (Escape-Html $section.Title) + '</a>'
+foreach ($category in $categoryOrder) {
+    $sideNavHtml += '<details class="nav-category">'
+    $sideNavHtml += '<summary class="nav-category-summary">' + (Escape-Html "$($category.Icon) $($category.Label)") + '</summary>'
+    $sideNavHtml += '<div class="nav-submenu">'
+    foreach ($sectionId in $category.Sections) {
+        $section = $sectionSpecs | Where-Object { $_.Id -eq $sectionId }
+        if ($section) {
+            $sideNavHtml += '<a href="#' + (Escape-Html $section.Id) + '" class="nav-item">' + (Escape-Html $section.Title) + '</a>'
+        }
+    }
+    $sideNavHtml += '</div>'
+    $sideNavHtml += '</details>'
 }
 $sideNavHtml += '</nav>'
 
@@ -1247,8 +1271,26 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe
 .wrap { min-width: 0; }
 .side-nav { position: sticky; top: 18px; align-self: start; max-height: calc(100vh - 36px); overflow: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
 .nav-title { color: var(--muted); font-size: 12px; margin: 2px 6px 10px; }
-.side-nav a { display: block; color: var(--text); text-decoration: none; border-radius: 6px; padding: 8px 9px; font-size: 13px; line-height: 1.35; }
-.side-nav a:hover { background: var(--panel2); }
+.nav-category { margin: 4px 0; }
+.nav-category summary {
+    display: block;
+    color: var(--blue);
+    cursor: pointer;
+    list-style: none;
+    border-radius: 6px;
+    padding: 8px 9px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.35;
+    transition: background 0.2s;
+}
+.nav-category summary::-webkit-details-marker { display: none; }
+.nav-category summary::before { content: "▸ "; transition: transform 0.2s; display: inline-block; }
+.nav-category[open] > summary::before { transform: rotate(90deg); }
+.nav-category summary:hover { background: var(--panel2); }
+.nav-submenu { padding-left: 16px; }
+.nav-item { display: block; color: var(--text); text-decoration: none; border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.4; margin: 1px 0; }
+.nav-item:hover { background: var(--panel2); }
 .header { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 22px; }
 h1 { margin: 0 0 10px; font-size: 28px; font-weight: 700; }
 .meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); }
@@ -1275,8 +1317,12 @@ th { color: var(--muted); font-weight: 600; background: #111a24; position: stick
 td { color: #e7edf5; }
 .risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .small { font-size: 12px; color: var(--muted); }
-.kql-block { margin: 14px 18px 0; background: #111a24; border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; color: #dbeafe; font-size: 12px; line-height: 1.55; }
-.kql-block code { font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; }
+.kql-block { margin: 14px 18px 0; background: #111a24; border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; color: #dbeafe; font-size: 12px; line-height: 1.55; }
+.kql-block summary { cursor: pointer; list-style: none; padding: 10px 14px; font-weight: 600; color: var(--blue); }
+.kql-block summary::-webkit-details-marker { display: none; }
+.kql-block summary::before { content: "▸"; display: inline-block; margin-right: 6px; transition: transform 0.2s; }
+.kql-block[open] summary::before { transform: rotate(90deg); }
+.kql-block code { display: block; padding: 10px 14px; background: #0d1320; border-radius: 4px; font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; overflow-x: auto; }
 @media (max-width: 980px) {
   .layout { display: block; padding: 18px; }
   .side-nav { position: static; max-height: none; margin-bottom: 18px; }
