@@ -70,6 +70,40 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+
+# ============================================================
+# CMD 环境检测：如果在 CMD 中运行，自动切换到 PowerShell
+# ============================================================
+# 检测方式：CMD 中运行时 $Host.Name 为 "Default Host" 或为空，且 COMSPEC 指向 cmd.exe
+$hostName = if ($Host -and $Host.Name) { $Host.Name } else { '' }
+$comspec = $env:COMSPEC
+$isCmd = ($hostName -eq 'Default Host' -or $hostName -eq '') -and ($comspec -match 'cmd\.exe$')
+
+if ($isCmd) {
+    Write-Host "检测到 CMD 环境，自动启动 PowerShell 执行脚本..." -ForegroundColor Yellow
+    
+    # 构建 PowerShell 参数
+    $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $MyInvocation.MyCommand.Definition)
+    
+    # 传递所有原始参数
+    foreach ($key in $PSBoundParameters.Keys) {
+        $value = $PSBoundParameters[$key]
+        if ($value -is [switch]) {
+            if ($value) { $psArgs += "-$key" }
+        } elseif ($value -is [array]) {
+            $psArgs += "-$key"
+            $psArgs += ($value -join ',')
+        } else {
+            $psArgs += "-$key"
+            $psArgs += [string]$value
+        }
+    }
+    
+    # 启动 PowerShell 并等待完成
+    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -Wait -PassThru -NoNewWindow
+    exit $process.ExitCode
+}
+
 $TempDir = "$env:USERPROFILE\AppData\Local\Temp\opencode"
 $CacheDir = "$TempDir\cache"
 $Now = Get-Date
