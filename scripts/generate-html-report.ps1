@@ -946,6 +946,7 @@ $failedOperations = [System.Collections.Generic.List[object]]::new()
 $deleteDisableEvents = [System.Collections.Generic.List[object]]::new()
 $suspiciousSigninSuccess = [System.Collections.Generic.List[object]]::new()
 $suspiciousIpReasons = @{}
+$suspiciousIpRecords = [System.Collections.Generic.List[object]]::new()
 $clientIpCounts = @{}
 $identityPermissionChanges = [System.Collections.Generic.List[object]]::new()
 $dcrLogErrorRows = [System.Collections.Generic.List[object]]::new()
@@ -1017,6 +1018,16 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
 
         if ($table -eq 'SigninLogs' -and $isUsablePublicIp -and -not $isTrustedIp) {
             $workload = Get-WorkloadValue -Row $row -TableName $table
+            $identity = Format-UserForReport -User (Get-UserValue -Row $row -TableName $table)
+            $appName = Get-SigninAppName -Row $row
+            if ([string]::IsNullOrWhiteSpace($appName)) { $appName = Get-OperationValue -Row $row -TableName $table }
+            $suspiciousIpRecords.Add([PSCustomObject]@{
+                IP = $ip
+                Identity = $identity
+                AppDisplayName = $appName
+                Count = $rowEventCount
+                Reason = "公共 IP，来源表/工作负载：$table / $workload"
+            }) | Out-Null
             if (-not $suspiciousIpReasons.ContainsKey($ip)) {
                 $suspiciousIpReasons[$ip] = "公共 IP，来源表/工作负载：$table / $workload"
             }
@@ -1214,10 +1225,20 @@ foreach ($row in $mailboxRows) {
 }
 
 $suspiciousIpRows = @(
-    $suspiciousIpReasons.GetEnumerator() |
-        Where-Object { -not (Test-CachedTrustedIp -IP $_.Key -Rules $trustedRules) } |
-        Sort-Object Name |
-        ForEach-Object { [PSCustomObject]@{ IP = $_.Key; Reason = $_.Value } }
+    @($suspiciousIpRecords |
+        Where-Object { -not (Test-CachedTrustedIp -IP $_.IP -Rules $trustedRules) } |
+        Group-Object -Property IP, Identity) |
+        ForEach-Object {
+            $items = @($_.Group)
+            [PSCustomObject]@{
+                IP = $items[0].IP
+                Identity = $items[0].Identity
+                AppDisplayName = (($items | ForEach-Object { $_.AppDisplayName } | Where-Object { $_ } | Sort-Object -Unique) -join ', ')
+                Count = ($items | ForEach-Object { [int]$_.Count } | Measure-Object -Sum).Sum
+                Reason = (($items | ForEach-Object { $_.Reason } | Where-Object { $_ } | Sort-Object -Unique) -join '；')
+            }
+        } |
+        Sort-Object IP, Identity
 )
 $suspiciousIpSet = @{}
 foreach ($row in $suspiciousIpRows) { $suspiciousIpSet[$row.IP] = 1 }
@@ -1306,10 +1327,13 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 $suspiciousIpKql = @"
 SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| extend Identity = tostring(coalesce(column_ifexists("Identity", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserDisplayName", ""), column_ifexists("UserId", "")))
+| extend AppDisplayName = tostring(column_ifexists("AppDisplayName", ""))
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
-| summarize LastTime=max(TimeGenerated), EventCount=count() by IPAddress, AppDisplayName
+| summarize LastTime=max(TimeGenerated), EventCount=count(), AppDisplayName=make_set(AppDisplayName, 20) by IPAddress=__ip, Identity
+| sort by IPAddress asc, Identity asc
 "@
 $clientIpRankLogic = @'
 处理逻辑：
@@ -1363,8 +1387,8 @@ $failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Row
 $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
     param($r) @($r.Time, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
-$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '原因') -CellBuilder {
-    param($r) @($r.IP, $r.Reason)
+$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', 'Identity', 'AppDisplayName', '次数', '原因') -CellBuilder {
+    param($r) @($r.IP, $r.Identity, $r.AppDisplayName, $r.Count, $r.Reason)
 })
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
