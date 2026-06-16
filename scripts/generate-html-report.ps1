@@ -165,7 +165,7 @@ function New-EventRecord {
         $subject = Get-AnyFieldValue -Row $Row -Names @('Subject') -Default ''
         $detail = (@($traceStatus, $subject) | Where-Object { $_ }) -join ' | '
     }
-    $target = Get-AnyFieldValue -Row $Row -Names @('Target', 'TargetDisplayName', 'TargetResources', 'TargetResource', 'ObjectId', 'InputStreamId', 'ResourceDisplayName', 'AppDisplayName', 'ServicePrincipalName', 'DisplayName', 'RecipientAddress', 'Subject') -Default ''
+    $target = Get-AnyFieldValue -Row $Row -Names @('Target', 'TargetDeviceName', 'TargetResources', 'TargetResource', 'ObjectId', 'InputStreamId', 'ResourceDisplayName', 'AppDisplayName', 'ServicePrincipalName', 'DisplayName', 'RecipientAddress', 'Subject') -Default ''
     $permissionName = Get-AnyFieldValue -Row $Row -Names @('PermissionName', 'AppRoleDisplayName') -Default ''
 
     return [PSCustomObject]@{
@@ -1438,7 +1438,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
     
     @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
 })
-$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
+$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDeviceName, Result, ResultDescription"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
