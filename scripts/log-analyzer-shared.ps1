@@ -1126,7 +1126,31 @@ function New-RiskOptimizedLogTableQuery {
         [string]$EndUtc
     )
 
-    return New-SafeLogTableQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc
+    switch ($TableName) {
+        'AADManagedIdentitySignInLogs' { return New-AadIdentitySigninOptimizedQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc }
+        'AADServicePrincipalSignInLogs' { return New-AadIdentitySigninOptimizedQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc }
+        'AssignedLicensesDCR_CL' { return New-AssignedLicensesOptimizedQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc }
+        'AuditLogs' { return New-AuditLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
+        'DCRLogErrors' { return New-DcrLogErrorsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
+        'IntuneAuditLogsDCR_CL' { return New-IntuneAuditLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
+        'MailboxStatisticsDCR_CL' { return New-MailboxStatisticsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
+        'MessageTraceDataDCR_CL' { return New-MessageTraceOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
+        'SigninLogs' { return New-SigninLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
+        default {
+            $query = New-SafeLogTableQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc
+            $riskFilter = Get-LogRiskFilterKql -TableName $TableName
+            if (-not [string]::IsNullOrWhiteSpace($riskFilter)) {
+                $query = @"
+$TableName
+| where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
+$riskFilter
+| sort by TimeGenerated desc
+| take 20000
+"@
+            }
+            return $query
+        }
+    }
 }
 
 function New-SafeLogTableQuery {
