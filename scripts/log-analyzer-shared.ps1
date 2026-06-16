@@ -1106,7 +1106,7 @@ MailboxStatisticsDCR_CL
 | extend MailboxOwnerUPN = tostring(column_ifexists("MailboxOwnerUPN", ""))
 | extend PrimarySmtpAddress = tostring(column_ifexists("PrimarySmtpAddress", ""))
 | extend DisplayName = tostring(column_ifexists("DisplayName", ""))
-| extend EmailAddress = tostring(column_ifexists("EmailAddress", ""))
+| extend EmailAddress = tostring(coalesce(column_ifexists("EmailAddress", ""), column_ifexists("PrimarySmtpAddress", ""), column_ifexists("Mail", ""), column_ifexists("WindowsEmailAddress", ""), column_ifexists("ExternalEmailAddress", ""), ""))
 | extend UserPrincipalName = tostring(column_ifexists("UserPrincipalName", ""))
 | extend UserPrincipalName = iff(isnotempty(UserPrincipalName), UserPrincipalName, iff(isnotempty(MailboxOwnerUPN), MailboxOwnerUPN, iff(isnotempty(PrimarySmtpAddress), PrimarySmtpAddress, iff(isnotempty(EmailAddress), EmailAddress, iff(isnotempty(DisplayName), DisplayName, "Unknown")))))
 | extend RecipientTypeDetails = tostring(column_ifexists("RecipientTypeDetails", ""))

@@ -272,6 +272,18 @@ function Test-SharedMailboxRow {
     return $false
 }
 
+function Get-MailboxDisplayName {
+    param([object]$Row)
+
+    return Get-AnyFieldValue -Row $Row -Names @('DisplayName', 'MailboxDisplayName', 'Name', 'Identity', 'UserPrincipalName') -Default 'Unknown'
+}
+
+function Get-MailboxEmailAddress {
+    param([object]$Row)
+
+    return Get-AnyFieldValue -Row $Row -Names @('EmailAddress', 'PrimarySmtpAddress', 'Mail', 'WindowsEmailAddress', 'ExternalEmailAddress', 'UserPrincipalName', 'MailboxOwnerUPN') -Default ''
+}
+
 function Get-ShortListText {
     param(
         [string[]]$Values,
@@ -1172,7 +1184,6 @@ if ($licenseUsage.Count -eq 0) {
     $licenseStatusNote = "$licenseStatusNote 以下 License 未能通过日志或 Graph 取得总量，已使用日志使用量填充总量下限并将剩余显示为 0，报告不再显示 N/A：$missingNames。"
 }
 
-$mailboxRisks = [System.Collections.Generic.List[object]]::new()
 $sharedMailboxRows = [System.Collections.Generic.List[object]]::new()
 $mailboxRows = Get-LatestMailboxRows -Rows @($datasets | Where-Object { $_.Table -eq 'MailboxStatisticsDCR_CL' } | ForEach-Object { $_.Rows })
 foreach ($row in $mailboxRows) {
@@ -1185,24 +1196,19 @@ foreach ($row in $mailboxRows) {
         $size = $quota - $available
     }
     $type = Get-MailboxTypeText -Row $row
+    $isCapacityRisk = ($null -ne $available -and $null -ne $quota -and $quota -gt 0 -and ($available / $quota) -lt 0.05)
 
-    if ($null -ne $available -and $null -ne $quota -and $quota -gt 0 -and ($available / $quota) -lt 0.05) {
-        $mailboxRisks.Add([PSCustomObject]@{
-            User = Format-UserForReport -User $user
-            AvailableGB = [Math]::Round($available, 2)
-            QuotaGB = [Math]::Round($quota, 2)
-            Usage = if ($null -ne $usagePercent) { "$usagePercent%" } else { '{0:P1}' -f (1 - ($available / $quota)) }
-            Reason = 'AvailableSpaceGB 低于 QuotaLimitGB 的 5%，可能导致无法收发邮件'
-        }) | Out-Null
-    }
-
-    if (Test-SharedMailboxRow -Row $row) {
+    if ((Test-SharedMailboxRow -Row $row) -or $isCapacityRisk) {
         $sharedMailboxRows.Add([PSCustomObject]@{
-            User = Format-UserForReport -User $user
+            DisplayName = Get-MailboxDisplayName -Row $row
+            EmailAddress = Get-MailboxEmailAddress -Row $row
             Type = if ($type) { $type } else { 'SharedMailbox' }
-            SizeGB = if ($null -ne $size) { [Math]::Round($size, 2) } else { 'N/A' }
-            AvailableGB = if ($null -ne $available) { [Math]::Round($available, 2) } else { 'N/A' }
-            QuotaGB = if ($null -ne $quota) { [Math]::Round($quota, 2) } else { 'N/A' }
+            TotalCapacityGB = if ($null -ne $quota) { [Math]::Round($quota, 2) } else { 'N/A' }
+            RemainingCapacityGB = if ($null -ne $available) { [Math]::Round($available, 2) } else { 'N/A' }
+            Usage = if ($null -ne $usagePercent) { "$usagePercent%" } elseif ($isCapacityRisk) { '{0:P1}' -f (1 - ($available / $quota)) } else { 'N/A' }
+            CapacityRisk = if ($isCapacityRisk) { '是' } else { '否' }
+            CapacityRiskSort = if ($isCapacityRisk) { 0 } else { 1 }
+            RemainingSort = if ($null -ne $available) { [double]$available } else { [double]::MaxValue }
         }) | Out-Null
     }
 }
@@ -1230,7 +1236,7 @@ $riskCounts = [PSCustomObject]@{
     SuspiciousIPs = $suspiciousIpRows.Count
     SuspiciousSigninSuccess = Get-EventCountSum -Rows $suspiciousSigninSuccess
     LicenseTypes = $licenseUsage.Count
-    MailboxLowSpace = $mailboxRisks.Count
+    MailboxLowSpace = @($sharedMailboxRows | Where-Object { $_.CapacityRisk -eq '是' }).Count
     SharedMailboxes = $sharedMailboxRows.Count
     IdentityPermissionChanges = Get-EventCountSum -Rows $identityPermissionChanges
     DcrLogErrors = $dcrLogErrorRows.Count
@@ -1410,13 +1416,9 @@ $licenseTableRows = @(
 $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseTableRows -Columns @('SkuPartNumber', '产品名称', '总数', '已分配', '剩余', '状态') -CellBuilder {
     param($r) @($r.SkuPartNumber, $r.ProductName, $r.Total, $r.Used, $r.Remaining, $r.Status)
 } -RawHtmlColumns @('状态'))
-$mailboxRiskKql = "MailboxStatisticsDCR_CL`r`n| where AvailableSpaceGB < QuotaLimitGB * 0.05`r`n| extend UsagePercent = round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2)`r`n| project TimeGenerated, DisplayName, AvailableSpaceGB, QuotaLimitGB, UsagePercent"
-$mailboxRiskHtml = (New-CodeBlockHtml -Text $mailboxRiskKql) + (New-TableHtml -Rows ($mailboxRisks | Sort-Object AvailableGB | Select-Object -First 50) -Columns @('邮箱', 'AvailableSpaceGB', 'QuotaLimitGB', '使用率', '风险') -CellBuilder {
-    param($r) @($r.User, $r.AvailableGB, $r.QuotaGB, $r.Usage, $r.Reason)
-})
-$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize arg_max(TimeGenerated, *) by UserPrincipalName`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or IsSharedMailbox in~ (`"true`", `"1`", `"yes`", `"y`")`r`n| project TimeGenerated, DisplayName, RecipientTypeDetails, AvailableSpaceGB, QuotaLimitGB"
-$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object SizeGB -Descending | Select-Object -First 80) -Columns @('SharedMailbox', '类型', '大小GB', 'AvailableSpaceGB', 'QuotaLimitGB') -CellBuilder {
-    param($r) @($r.User, $r.Type, "$($r.SizeGB) GB", $r.AvailableGB, $r.QuotaGB)
+$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize arg_max(TimeGenerated, *) by UserPrincipalName`r`n| extend CapacityRisk = QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or IsSharedMailbox in~ (`"true`", `"1`", `"yes`", `"y`") or CapacityRisk`r`n| project TimeGenerated, DisplayName, EmailAddress, RecipientTypeDetails, QuotaLimitGB, AvailableSpaceGB, CapacityRisk"
+$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '总容量', '剩余容量', '使用率', '邮箱容量是否风险') -CellBuilder {
+    param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.TotalCapacityGB, $r.RemainingCapacityGB, $r.Usage, $r.CapacityRisk)
 })
 $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message"
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', 'InputStreamId', 'OperationName', 'Message') -CellBuilder {
@@ -1459,8 +1461,7 @@ $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'mailbox-low-space'; Title = '邮箱容量风险'; Note = '使用 MailboxStatisticsDCR_CL 的低可用空间 KQL 在查询端直接筛选异常邮箱。'; Content = $mailboxRiskHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $false },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，并合并邮箱容量风险；有风险的邮箱排在最前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true },
     [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true },
     [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true },
     [PSCustomObject]@{ Id = 'failed-ops'; Title = '其他失败/异常操作'; Note = '登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录；仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedOpsHtml; Open = $false },
@@ -1471,7 +1472,7 @@ $sectionSpecs = @(
 $categoryOrder = @(
     [PSCustomObject]@{ Key = 'login-security'; Label = '登录与身份安全'; Icon = '🔐'; Sections = @('suspicious-success', 'suspicious-ip', 'failed-signins') },
     [PSCustomObject]@{ Key = 'operation-audit'; Label = '操作审计'; Icon = '📋'; Sections = @('identity-permission', 'delete-disable', 'failed-ops') },
-    [PSCustomObject]@{ Key = 'mailbox'; Label = '邮箱安全'; Icon = '📧'; Sections = @('mailbox-low-space', 'shared-mailbox') },
+    [PSCustomObject]@{ Key = 'mailbox'; Label = '邮箱安全'; Icon = '📧'; Sections = @('shared-mailbox') },
     [PSCustomObject]@{ Key = 'data-source'; Label = '数据源与许可证'; Icon = '💾'; Sections = @('dcr-log-errors', 'intune-audit', 'license', 'source-status') }
 )
 
