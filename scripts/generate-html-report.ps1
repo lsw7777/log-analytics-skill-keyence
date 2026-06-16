@@ -18,7 +18,10 @@
     [string]$StartUtc = '',
 
     [Parameter(Mandatory = $false)]
-    [string]$EndUtc = ''
+    [string]$EndUtc = '',
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipLicenseGraph
 )
 
 $ErrorActionPreference = 'Stop'
@@ -317,6 +320,47 @@ function Group-EventRecords {
         }
     )
     return @($groupedRows | Sort-Object -Property @{ Expression = { $_.Count }; Descending = $true }, @{ Expression = { $_.LastTime }; Descending = $true })
+}
+
+function Get-StrictEventMergeKey {
+    param([object]$Row)
+
+    $time = if ($Row.LastTime) { $Row.LastTime } elseif ($Row.Time) { $Row.Time } else { $Row.ActivityDateTime }
+    $operationContent = @(
+        $Row.Operation,
+        $Row.Target,
+        $Row.PermissionName,
+        $Row.Detail,
+        $Row.IP,
+        $Row.Status,
+        $Row.Reason,
+        $Row.Table
+    ) -join '|'
+
+    return "$($Row.User)|$operationContent|$time"
+}
+
+function Test-CachedPrivateOrInvalidIp {
+    param([string]$IP)
+
+    if ([string]::IsNullOrWhiteSpace($IP)) { return $true }
+    if (-not $script:PrivateIpCache.ContainsKey($IP)) {
+        $script:PrivateIpCache[$IP] = Test-PrivateOrInvalidIp -IP $IP
+    }
+    return [bool]$script:PrivateIpCache[$IP]
+}
+
+function Test-CachedTrustedIp {
+    param(
+        [string]$IP,
+        [object[]]$Rules
+    )
+
+    if ([string]::IsNullOrWhiteSpace($IP)) { return $false }
+    if (-not $script:TrustedIpCache.ContainsKey($IP)) {
+        $script:TrustedIpCache[$IP] = Test-IpInTrustedRules -IP $IP -Rules $Rules
+    }
+    return [bool]$script:TrustedIpCache[$IP]
 }
 
 function Format-UserForReport {
@@ -875,6 +919,8 @@ foreach ($dataset in $datasets) {
 }
 
 $trustedRules = @(Get-TrustedIpRules)
+$script:PrivateIpCache = @{}
+$script:TrustedIpCache = @{}
 $failedSignins = [System.Collections.Generic.List[object]]::new()
 $failedOperations = [System.Collections.Generic.List[object]]::new()
 $deleteDisableEvents = [System.Collections.Generic.List[object]]::new()
@@ -893,6 +939,10 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
     $totalCount = if ($TotalCounts -and $i -lt $TotalCounts.Count) { $TotalCounts[$i] } else { $filteredCount }
     $sourceStatusRows.Add([PSCustomObject]@{ Table = $table; TotalRecords = $totalCount; FilteredRecords = $filteredCount; Source = (Split-Path -Leaf $dataset.Path) }) | Out-Null
 
+    if ($table -in @('AssignedLicensesDCR_CL', 'MailboxStatisticsDCR_CL')) {
+        continue
+    }
+
     foreach ($row in $dataset.Rows) {
         if ($table -eq 'AuditLogs') {
             if (-not (Test-AuditLogUserActor -Row $row)) { continue }
@@ -909,8 +959,8 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
             $success = 'false'
         }
         $ip = Get-NormalizedIpValue -IP (Get-ClientIpValue -Row $row -TableName $table)
-        $isUsablePublicIp = -not (Test-PrivateOrInvalidIp -IP $ip)
-        $isTrustedIp = Test-IpInTrustedRules -IP $ip -Rules $trustedRules
+        $isUsablePublicIp = -not (Test-CachedPrivateOrInvalidIp -IP $ip)
+        $isTrustedIp = if ($isUsablePublicIp) { Test-CachedTrustedIp -IP $ip -Rules $trustedRules } else { $false }
 
         if ($isUsablePublicIp) {
             Add-Count -Map $clientIpCounts -Key $ip -By $rowEventCount
@@ -970,7 +1020,11 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
 $licenseStatusNote = 'License 列表优先使用 Microsoft Graph subscribedSkus 获取（SkuPartNumber 更准确）；使用量优先从 AssignedLicensesDCR_CL 日志获取。'
 
 # 首先尝试从 Graph API 获取 License 列表
-$graphLicenseResult = Get-LicenseSkuTotalsFromGraph
+$graphLicenseResult = if ($SkipLicenseGraph) {
+    [PSCustomObject]@{ Success = $false; Message = '已跳过 Microsoft Graph License 校验以加快报告生成。'; Skus = @{}; SkuList = @() }
+} else {
+    Get-LicenseSkuTotalsFromGraph
+}
 $licenseUsage = @()
 
 if ($graphLicenseResult.Success) {
@@ -1148,7 +1202,7 @@ foreach ($row in $mailboxRows) {
 
 $suspiciousIpRows = @(
     $suspiciousIpReasons.GetEnumerator() |
-        Where-Object { -not (Test-IpInTrustedRules -IP $_.Key -Rules $trustedRules) } |
+        Where-Object { -not (Test-CachedTrustedIp -IP $_.Key -Rules $trustedRules) } |
         Sort-Object Name |
         ForEach-Object { [PSCustomObject]@{ IP = $_.Key; Reason = $_.Value } }
 )
@@ -1209,7 +1263,7 @@ $failedOpsLogic = @'
 处理逻辑：
 1. 各表查询端先筛选失败/异常、删除/Disable、消息追踪异常等风险记录。
 2. 报告端排除已经单独展示的登录失败、删除/Disable、DCRLogErrors、Intune 审计等栏目。
-3. 剩余失败/异常按 表 + 用户 + 操作 + 状态/原因 合并，只显示最后时间和次数。
+3. 剩余失败/异常仅在操作者、操作内容、时间戳完全相同时合并，否则逐条展示。
 '@
 $deleteDisableKql = @"
 union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
@@ -1286,22 +1340,22 @@ AuditLogs
 | summarize ActivityDateTime=max(todatetime(ActivityDateTime)), EventCount=count() by Actor, OperationName, Target, PermissionName
 "@
 
-$failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) $r.IP }
+$failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
 })
-$failedOpsGrouped = Group-EventRecords -Rows $failedOperations -KeyBuilder { param($r) "$($r.Table)|$($r.User)|$($r.Operation)|$($r.Detail)" }
+$failedOpsGrouped = Group-EventRecords -Rows $failedOperations -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Rows ($failedOpsGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', '表', '用户', '操作', '状态/原因') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
-$deleteDisableGrouped = Group-EventRecords -Rows $deleteDisableEvents -KeyBuilder { param($r) "$($r.Table)|$($r.User)|$($r.Operation)|$($r.Detail)" }
+$deleteDisableGrouped = Group-EventRecords -Rows $deleteDisableEvents -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
 $suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '原因') -CellBuilder {
     param($r) @($r.IP, $r.Reason)
 })
-$signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.IP)" }
+$signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
 })
@@ -1359,7 +1413,7 @@ $sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where RecipientTypeDetails con
 $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object SizeGB -Descending | Select-Object -First 80) -Columns @('SharedMailbox', '类型', '大小GB', 'AvailableSpaceGB', 'QuotaLimitGB') -CellBuilder {
     param($r) @($r.User, $r.Type, "$($r.SizeGB) GB", $r.AvailableGB, $r.QuotaGB)
 })
-$permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.PermissionName)" }
+$permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
     param($r) 
@@ -1387,7 +1441,7 @@ $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -
     param($r) @($r.Target, $r.Operation, $r.Detail)
 })
 $intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
-$intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.Detail)" }
+$intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
 })
@@ -1396,17 +1450,17 @@ $sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtm
 })
 
 $sectionSpecs = @(
-    [PSCustomObject]@{ Id = 'failed-signins'; Title = 'AAD / Managed Identity / Service Principal 登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。相同 IP 的多次失败已合并。'; Content = $failedSigninHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'failed-signins'; Title = 'AAD / Managed Identity / Service Principal 登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
     [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '仅显示用户操作者触发的 Add/Remove/Hard delete service principal，以及 Add/Remove app role assignment to service principal；PIM 相关记录已排除。'; Content = $permissionHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；AuditLogs 已去掉目标字段，并按除时间外相同的记录合并。'; Content = $deleteDisableHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。相同主体、应用、IP 已合并。'; Content = $signinSuspiciousHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $deleteDisableHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
     [PSCustomObject]@{ Id = 'mailbox-low-space'; Title = '邮箱容量风险'; Note = '使用 MailboxStatisticsDCR_CL 的低可用空间 KQL 在查询端直接筛选异常邮箱。'; Content = $mailboxRiskHtml; Open = $true },
     [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = '显示 MailboxStatisticsDCR_CL 中被 RecipientTypeDetails、MailboxType 或 IsSharedMailbox 字段标识为 SharedMailbox 的邮箱。'; Content = $sharedMailboxHtml; Open = $false },
     [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的 InputStreamId、OperationName、Message 去重展示。'; Content = $dcrLogErrorHtml; Open = $true },
     [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'failed-ops'; Title = '其他失败/异常操作'; Note = '登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录，并按相似内容合并。'; Content = $failedOpsHtml; Open = $false },
+    [PSCustomObject]@{ Id = 'failed-ops'; Title = '其他失败/异常操作'; Note = '登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录；仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedOpsHtml; Open = $false },
     [PSCustomObject]@{ Id = 'source-status'; Title = '数据源查询状态'; Note = '显示本次参与生成合并报告的 CSV 数据源。'; Content = $sourceStatusHtml; Open = $false }
 )
 

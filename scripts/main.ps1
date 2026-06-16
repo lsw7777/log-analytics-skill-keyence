@@ -56,6 +56,10 @@ param(
 
     [Parameter(Mandatory = $false)]
     [int]$TotalCountTimeoutSec = 30
+
+    ,
+    [Parameter(Mandatory = $false)]
+    [switch]$VerifyLicenseGraph
 )
 
 $ErrorActionPreference = 'Stop'
@@ -226,6 +230,7 @@ Write-Host "Tables: $($targetTables -join ', ')" -ForegroundColor Cyan
 Write-Host "Time range: $AnalysisDateDisplay ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
 Write-Host "Cache: $(if($UseCache){'Enabled'}else{'Disabled'})" -ForegroundColor Cyan
 Write-Host "Risk prefilter: $(if($NoRiskFilter){'Disabled'}else{'Enabled'})" -ForegroundColor Cyan
+Write-Host "License Graph verification: $(if($VerifyLicenseGraph){'Enabled'}else{'Skipped for speed'})" -ForegroundColor Cyan
 Write-Host "Total count precheck: $(if($SkipTotalCount){'Skipped'}else{'Enabled'})" -ForegroundColor Cyan
 if (-not $SkipTotalCount) { Write-Host "Total count timeout: ${TotalCountTimeoutSec}s" -ForegroundColor Cyan }
 Write-Host "HTML: $($reportPaths.HtmlFile)" -ForegroundColor Cyan
@@ -401,7 +406,17 @@ $analysisStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 # 计算 UTC 时间用于 KQL 语句显示
 $startUtcIso = $StartTime.ToUniversalTime().ToString('o')
 $endUtcIso = $EndTime.ToUniversalTime().ToString('o')
-& "$ScriptDir\generate-html-report.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray() -TotalCounts $csvTotalCounts.ToArray() -StartUtc $startUtcIso -EndUtc $endUtcIso
+$htmlParams = @{
+    CsvPath = $csvFiles.ToArray()
+    OutputPath = $HtmlFilePath
+    AnalysisDate = $AnalysisDateDisplay
+    TableName = $csvTables.ToArray()
+    TotalCounts = $csvTotalCounts.ToArray()
+    StartUtc = $startUtcIso
+    EndUtc = $endUtcIso
+}
+if (-not $VerifyLicenseGraph) { $htmlParams.SkipLicenseGraph = $true }
+& "$ScriptDir\generate-html-report.ps1" @htmlParams
 $analysisStopwatch.Stop()
 
 if (-not (Test-Path $HtmlFilePath)) {
