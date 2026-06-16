@@ -801,8 +801,6 @@ function Get-TrustedIpKqlDynamicLiteral {
 function Get-LogRiskFilterKql {
     param([string]$TableName)
 
-    $trustedIps = Get-TrustedIpKqlDynamicLiteral
-
     if ($TableName -eq 'AssignedLicensesDCR_CL' -or $TableName -eq 'AzureADUsersDCR_CL') {
         return ''
     }
@@ -832,7 +830,7 @@ function Get-LogRiskFilterKql {
 | extend __isFailed = (__status in ("false","fail","failed","failure","undelivered","blocked","rejected","denied","error","timeout","quarantined","1") or (__status matches regex @"^\d+$" and toint(__status) != 0))
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
 | extend __isDeleteDisable = tolower(__op) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| extend __isPublicUntrustedIp = ("$TableName" == "SigninLogs" and isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255" and not(ipv4_is_in_any_range(__ip, $trustedIps)))
+| extend __isPublicUntrustedIp = ("$TableName" == "SigninLogs" and isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255")
 | extend __isSigninSuspiciousSuccess = ("$TableName" == "SigninLogs" and __status in ("true","success","succeeded","0") and __isPublicUntrustedIp and not(__app in ($appAllowList)))
 | extend __isMessageTraceCritical = ("$TableName" == "MessageTraceDataDCR_CL" and __permissionText matches regex @"(?i)\b(fail(ed|ure)?|blocked|quarantined|reject(ed)?|undeliver(ed|able)?|error|timeout|bounced)\b")
 | extend __isMessageTraceBusiness = ("$TableName" == "MessageTraceDataDCR_CL" and __permissionText matches regex @"(?i)\b(Power\s*BI|PBI|SkyGuard)\b" and __permissionText matches regex @"(?i)\b(fail(ed|ure)?|blocked|quarantined|reject(ed)?|undeliver(ed|able)?|error|timeout|bounced)\b")
@@ -873,8 +871,6 @@ function New-AadIdentitySigninOptimizedQuery {
     )
 
     $failedThresholdClause = '| where __RecordKind != "AggregatedFailedSignin" or EventCount > 10'
-    $trustedIps = Get-TrustedIpKqlDynamicLiteral
-
     return @"
 $TableName
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
@@ -892,13 +888,13 @@ $TableName
 | extend ResultDescription = case(isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, isnotempty(__FailureReasonRaw), __FailureReasonRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ConditionalAccessStatusRaw), __ConditionalAccessStatusRaw, "")
 | extend __status = tolower(ResultType)
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __resultDescriptionLower = tolower(ResultDescription)
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultDescriptionLower contains "fail" or __resultDescriptionLower contains "failure" or __resultDescriptionLower contains "denied" or __resultDescriptionLower contains "error" or __resultDescriptionLower contains "timeout"
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
-| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIps)
-| where __isFailed or (__isSuccess and __isPublicIp and not(__isTrustedIp))
+| where __isFailed or (__isSuccess and __isPublicIp)
 | extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultDescription=take_any(ResultDescription) by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, IPAddress, ResultType, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription, __RecordKind
 $failedThresholdClause
 | extend OperationName=ServicePrincipalName, Status=ResultType
 | project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, __RecordKind
@@ -910,8 +906,6 @@ function New-SigninLogsOptimizedQuery {
         [string]$StartUtc,
         [string]$EndUtc
     )
-
-    $trustedIps = Get-TrustedIpKqlDynamicLiteral
 
     return @"
 SigninLogs
@@ -931,14 +925,16 @@ SigninLogs
 | extend __status = tolower(ResultType)
 | extend __resultCode = tolong(ResultType)
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __resultDescriptionLower = tolower(ResultDescription)
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or __resultDescriptionLower contains "fail" or __resultDescriptionLower contains "failure" or __resultDescriptionLower contains "denied" or __resultDescriptionLower contains "error" or __resultDescriptionLower contains "timeout"
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
-| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIps)
-| extend __isSigninSuspiciousSuccess = (__isSuccess and __isPublicIp and not(__isTrustedIp) and not(AppDisplayName in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")))
+| extend __appLower = tolower(AppDisplayName)
+| extend __isAllowedApp = __appLower in ("windows sign in", "microsoft edge", "sangfor sase vpn", "microsoft office")
+| extend __isSigninSuspiciousSuccess = (__isSuccess and __isPublicIp and not(__isAllowedApp))
 | where __isFailed or __isSigninSuspiciousSuccess
 | extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultDescription=take_any(ResultDescription) by UserPrincipalName, UserDisplayName, AppDisplayName, IPAddress, ResultType, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, UserDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription, __RecordKind
 | extend OperationName=AppDisplayName, Status=ResultType
 | project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, UserDisplayName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, __RecordKind
 "@
@@ -1109,13 +1105,14 @@ MailboxStatisticsDCR_CL
 | extend RecipientType = tostring(coalesce(column_ifexists("RecipientType", ""), column_ifexists("RecipientTypeDetail", ""), ""))
 | extend __sharedFlagText = tostring(coalesce(column_ifexists("IsSharedMailbox", ""), column_ifexists("IsSharedMailBox", ""), column_ifexists("IsShared", ""), column_ifexists("SharedMailbox", ""), column_ifexists("SharedMailBox", ""), ""))
 | extend __mailboxTypeText = strcat(" ", RecipientTypeDetails, " ", MailboxType, " ", RecipientType, " ", __sharedFlagText)
-| extend __isSharedMailbox = tolower(__mailboxTypeText) contains "shared" or __sharedFlagText in~ ("true", "1", "yes", "y")
+| extend __sharedFlagLower = tolower(__sharedFlagText)
+| extend __isSharedMailbox = tolower(__mailboxTypeText) contains "shared" or __sharedFlagLower in ("true", "1", "yes", "y")
 | extend IsSharedMailbox = tostring(__isSharedMailbox)
 | extend __availableText = tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", ""), column_ifexists("AvailableSpaceGB_s", ""), column_ifexists("AvailableSpaceInGB_s", "")))
 | extend __quotaText = tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", ""), column_ifexists("QuotaLimitGB_s", ""), column_ifexists("QuotaGB_s", "")))
 | extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __availableText))
 | extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __quotaText))
-| extend UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
+| extend UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), todouble(""))
 | extend TotalItemSizeGB = tostring(coalesce(column_ifexists("TotalItemSizeGB", ""), column_ifexists("TotalItemSizeInGB", ""), column_ifexists("MailboxSizeGB", ""), column_ifexists("MailboxSize", ""), column_ifexists("SizeGB", ""), column_ifexists("TotalSizeGB", ""), column_ifexists("TotalItemSize", ""), column_ifexists("StorageUsedGB", ""), column_ifexists("StorageUsed", ""), column_ifexists("TotalItemSizeGB_s", ""), column_ifexists("MailboxSizeGB_s", "")))
 | extend FirstTime=TimeGenerated, LastTime=TimeGenerated, EventCount=1, __RecordKind="LatestMailboxSnapshot"
 | project TimeGenerated, FirstTime, LastTime, EventCount, DisplayName, UserPrincipalName, MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, RecipientTypeDetails, MailboxType, RecipientType, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent, TotalItemSizeGB, __RecordKind

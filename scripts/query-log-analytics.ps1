@@ -56,7 +56,10 @@ param(
     [switch]$RawCount,
 
     [Parameter(Mandatory = $false)]
-    [switch]$NoProfile
+    [switch]$NoProfile,
+
+    [Parameter(Mandatory = $false)]
+    [int]$QueryTimeoutSec = 0
 )
 
 # ============================================================
@@ -222,7 +225,9 @@ function Invoke-LogQuery {
 
         [switch]$IncludeStats,
 
-        [switch]$RawCount
+        [switch]$RawCount,
+
+        [int]$QueryTimeoutSec = 0
     )
 
     if (-not $RawCount) {
@@ -247,6 +252,9 @@ function Invoke-LogQuery {
             WorkspaceId = $WorkspaceId
             Query = $Query
             ErrorAction = 'Stop'
+        }
+        if ($QueryTimeoutSec -gt 0) {
+            $queryParams['Wait'] = $QueryTimeoutSec
         }
 
         # For RawCount queries, the KQL query already contains time filtering in the where clause.
@@ -439,7 +447,7 @@ if ($TableName) {
 }
 
 # Execute query
-Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -QueryStartTime $queryStartTime -QueryEndTime $queryEndTime -IncludeStats:$IncludeStats -RawCount:$RawCount
+Invoke-LogQuery -Query $Query -WorkspaceId $WorkspaceId -Hours $Hours -QueryStartTime $queryStartTime -QueryEndTime $queryEndTime -IncludeStats:$IncludeStats -RawCount:$RawCount -QueryTimeoutSec $QueryTimeoutSec
 
 
 <#

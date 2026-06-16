@@ -52,7 +52,10 @@ param(
     [switch]$NoRiskFilter,
 
     [Parameter(Mandatory = $false)]
-    [switch]$SkipTotalCount
+    [switch]$SkipTotalCount,
+
+    [Parameter(Mandatory = $false)]
+    [int]$TotalCountTimeoutSec = 30
 )
 
 $ErrorActionPreference = 'Stop'
@@ -224,6 +227,7 @@ Write-Host "Time range: $AnalysisDateDisplay ($($StartTime.ToString('yyyy-MM-dd 
 Write-Host "Cache: $(if($UseCache){'Enabled'}else{'Disabled'})" -ForegroundColor Cyan
 Write-Host "Risk prefilter: $(if($NoRiskFilter){'Disabled'}else{'Enabled'})" -ForegroundColor Cyan
 Write-Host "Total count precheck: $(if($SkipTotalCount){'Skipped'}else{'Enabled'})" -ForegroundColor Cyan
+if (-not $SkipTotalCount) { Write-Host "Total count timeout: ${TotalCountTimeoutSec}s" -ForegroundColor Cyan }
 Write-Host "HTML: $($reportPaths.HtmlFile)" -ForegroundColor Cyan
 Write-Host ''
 
@@ -273,11 +277,11 @@ foreach ($table in $targetTables) {
     } else {
     try {
         $totalCountQuery = New-TableTotalCountQuery -TableName $table -StartTime $StartTime -EndTime $EndTime
-        Write-Host "  Getting total record count... (if this takes too long, press Ctrl+C and rerun with -SkipTotalCount)" -ForegroundColor DarkGray
+        Write-Host "  Getting total record count... (timeout: ${TotalCountTimeoutSec}s; if this is slow, rerun with -SkipTotalCount)" -ForegroundColor DarkGray
         # Do NOT print the query to avoid exposing IP addresses
         # Note: Do NOT pass -TableName here, only pass -Query, otherwise the script will 
         # auto-generate a query based on the table name and ignore our count query
-        $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -ErrorAction Stop 2>&1
+        $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -QueryTimeoutSec $TotalCountTimeoutSec -ErrorAction Stop 2>&1
         $exitCode = $LASTEXITCODE
         Write-Host "  Exit code: $exitCode" -ForegroundColor DarkGray
         Write-Host "  Raw result type: $($totalCountResult.GetType().Name)" -ForegroundColor DarkGray
@@ -297,6 +301,7 @@ foreach ($table in $targetTables) {
         Write-Host "  Parsed total count: $totalCount" -ForegroundColor DarkGray
     } catch {
         Write-Host "  Failed to get total count: $_" -ForegroundColor DarkYellow
+        Write-Host "  Continue without total count for $table. You can use -SkipTotalCount to bypass this precheck." -ForegroundColor DarkYellow
         Write-Host "  Exception type: $($_.Exception.GetType().Name)" -ForegroundColor DarkYellow
     }
     }
