@@ -39,6 +39,23 @@ function Escape-Html {
     return $s -replace '&', '&amp;' -replace '<', '&lt;' -replace '>', '&gt;' -replace '"', '&quot;' -replace "'", '&#39;'
 }
 
+function Get-I18nAttr {
+    param([string]$Key)
+    if ([string]::IsNullOrWhiteSpace($Key)) { return '' }
+    return ' data-i18n="' + (Escape-Html $Key) + '"'
+}
+
+function Get-I18nKeyFromText {
+    param(
+        [string]$Prefix,
+        [string]$Text
+    )
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $slug = [regex]::Replace($Text.Trim(), '[^\p{L}\p{Nd}]+', '_').Trim('_')
+    if ([string]::IsNullOrWhiteSpace($slug)) { return '' }
+    return "$Prefix.$slug"
+}
+
 function Get-LocalTimeText {
     param([string]$Value)
     if ([string]::IsNullOrWhiteSpace($Value)) { return '' }
@@ -195,11 +212,13 @@ function New-TableHtml {
     )
 
     if (-not $Rows -or @($Rows).Count -eq 0) {
-        return '<p class="empty">未发现相关风险。</p>'
+        return '<p class="empty" data-i18n="empty.noRisk">未发现相关风险。</p>'
     }
 
     $html = '<div class="table-scroll"><table><thead><tr>'
-    foreach ($col in $Columns) { $html += '<th>' + (Escape-Html $col) + '</th>' }
+    foreach ($col in $Columns) {
+        $html += '<th' + (Get-I18nAttr -Key (Get-I18nKeyFromText -Prefix 'field' -Text $col)) + '>' + (Escape-Html $col) + '</th>'
+    }
     $html += '</tr></thead><tbody>'
     foreach ($row in $Rows) {
         $html += '<tr>'
@@ -222,7 +241,7 @@ function New-TableHtml {
 
 function New-CodeBlockHtml {
     param([string]$Text)
-    return '<details class="kql-block"><summary>KQL 语句</summary><code>' + (Escape-Html $Text) + '</code></details>'
+    return '<details class="kql-block"><summary data-i18n="label.kql">KQL 语句</summary><code>' + (Escape-Html $Text) + '</code></details>'
 }
 
 function Get-TimeValueForSort {
@@ -898,9 +917,10 @@ function New-ReportSection {
     )
     $openText = if ($Open) { ' open' } else { '' }
     $noteHtml = if ([string]::IsNullOrWhiteSpace($Note)) { '' } else { '<p class="note">' + (Escape-Html $Note) + '</p>' }
+    $titleKey = "section.$Id.title"
     return @"
   <details class="section" id="$(Escape-Html $Id)"$openText>
-    <summary><span>$(Escape-Html $Title)</span></summary>
+    <summary><span data-i18n="$(Escape-Html $titleKey)">$(Escape-Html $Title)</span></summary>
     $noteHtml
     $Content
   </details>
@@ -1501,15 +1521,15 @@ $categoryOrder = @(
 )
 
 # 构建二级目录 HTML（使用 details/summary 实现一级分类折叠）
-$sideNavHtml = '<nav class="side-nav"><div class="nav-title">目录</div>'
+$sideNavHtml = '<nav class="side-nav"><div class="nav-title" data-i18n="nav.title">目录</div>'
 foreach ($category in $categoryOrder) {
     $sideNavHtml += '<details class="nav-category">'
-    $sideNavHtml += '<summary class="nav-category-summary">' + (Escape-Html "$($category.Icon) $($category.Label)") + '</summary>'
+    $sideNavHtml += '<summary class="nav-category-summary"><span>' + (Escape-Html $category.Icon) + ' </span><span data-i18n="category.' + (Escape-Html $category.Key) + '">' + (Escape-Html $category.Label) + '</span></summary>'
     $sideNavHtml += '<div class="nav-submenu">'
     foreach ($sectionId in $category.Sections) {
         $section = $sectionSpecs | Where-Object { $_.Id -eq $sectionId }
         if ($section) {
-            $sideNavHtml += '<a href="#' + (Escape-Html $section.Id) + '" class="nav-item">' + (Escape-Html $section.Title) + '</a>'
+            $sideNavHtml += '<a href="#' + (Escape-Html $section.Id) + '" class="nav-item" data-i18n="section.' + (Escape-Html $section.Id) + '.title">' + (Escape-Html $section.Title) + '</a>'
         }
     }
     $sideNavHtml += '</div>'
@@ -1571,7 +1591,10 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe
 .nav-item { display: block; color: var(--text); text-decoration: none; border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.4; margin: 1px 0; }
 .nav-item:hover { background: var(--panel2); }
 .header { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 22px; }
+.header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 h1 { margin: 0 0 10px; font-size: 28px; font-weight: 700; }
+.language-switcher { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; color: var(--muted); font-size: 13px; }
+.language-switcher select { background: #111a24; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); }
 .tag { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
 .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
@@ -1613,32 +1636,183 @@ td { color: #e7edf5; }
 $sideNavHtml
 <div class="wrap">
   <div class="header">
-    <h1>Log Analytics 合并风险报告</h1>
+    <div class="header-top">
+      <h1 data-i18n="report.title">Log Analytics 合并风险报告</h1>
+      <label class="language-switcher"><span data-i18n="language.label">语言</span><select id="languageSelect" aria-label="Language"><option value="zh-CN">中文</option><option value="en-US">English</option><option value="ja-JP">日本語</option></select></label>
+    </div>
     <div class="meta">
-      <span class="tag">查询时间段: $(Escape-Html $AnalysisDate)</span>
-      <span class="tag">数据表: $tableCount</span>
-      <span class="tag">总记录数: $totalRecords</span>
-      <span class="tag">可信 IP 规则: $trustedCount</span>
+      <span class="tag"><span data-i18n="meta.timeRange">查询时间段</span>: $(Escape-Html $AnalysisDate)</span>
+      <span class="tag"><span data-i18n="meta.tables">数据表</span>: $tableCount</span>
+      <span class="tag"><span data-i18n="meta.totalRecords">总记录数</span>: $totalRecords</span>
+      <span class="tag"><span data-i18n="meta.trustedIpRules">可信 IP 规则</span>: $trustedCount</span>
     </div>
   </div>
 
   <div class="summary">
-    <div class="card"><div class="label">登录失败</div><div class="value red">$($riskCounts.FailedSignins)</div></div>
-    <div class="card"><div class="label">失败/异常操作</div><div class="value red">$($riskCounts.FailedOperations)</div></div>
-    <div class="card"><div class="label">删除 / Disable</div><div class="value amber">$($riskCounts.DeleteDisable)</div></div>
-    <div class="card"><div class="label">可疑 IP</div><div class="value amber">$($riskCounts.SuspiciousIPs)</div></div>
-    <div class="card"><div class="label">可信位置外成功登录</div><div class="value amber">$($riskCounts.SuspiciousSigninSuccess)</div></div>
-    <div class="card"><div class="label">邮箱低容量</div><div class="value red">$($riskCounts.MailboxLowSpace)</div></div>
-    <div class="card"><div class="label">SharedMailbox</div><div class="value blue">$($riskCounts.SharedMailboxes)</div></div>
-    <div class="card"><div class="label">DCRLogErrors</div><div class="value red">$($riskCounts.DcrLogErrors)</div></div>
-    <div class="card"><div class="label">Intune 审计记录</div><div class="value amber">$($riskCounts.IntuneAudit)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.failedSignins">登录失败</div><div class="value red">$($riskCounts.FailedSignins)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.failedOperations">失败/异常操作</div><div class="value red">$($riskCounts.FailedOperations)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.deleteDisable">删除 / Disable</div><div class="value amber">$($riskCounts.DeleteDisable)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.suspiciousIp">可疑 IP</div><div class="value amber">$($riskCounts.SuspiciousIPs)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.suspiciousSigninSuccess">可信位置外成功登录</div><div class="value amber">$($riskCounts.SuspiciousSigninSuccess)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.mailboxLowSpace">邮箱低容量</div><div class="value red">$($riskCounts.MailboxLowSpace)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.sharedMailbox">SharedMailbox</div><div class="value blue">$($riskCounts.SharedMailboxes)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.dcrLogErrors">DCRLogErrors</div><div class="value red">$($riskCounts.DcrLogErrors)</div></div>
+    <div class="card"><div class="label" data-i18n="summary.intuneAudit">Intune 审计记录</div><div class="value amber">$($riskCounts.IntuneAudit)</div></div>
   </div>
 
   $reportSectionsHtml
 
-  <p class="small">Generated at $(Escape-Html ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')))</p>
+  <p class="small"><span data-i18n="footer.generatedAt">Generated at</span> $(Escape-Html ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')))</p>
 </div>
 </div>
+<script>
+const i18n = {
+  'zh-CN': {
+    'report.title': 'Log Analytics 合并风险报告',
+    'language.label': '语言',
+    'nav.title': '目录',
+    'meta.timeRange': '查询时间段',
+    'meta.tables': '数据表',
+    'meta.totalRecords': '总记录数',
+    'meta.trustedIpRules': '可信 IP 规则',
+    'footer.generatedAt': 'Generated at',
+    'label.kql': 'KQL 语句',
+    'empty.noRisk': '未发现相关风险。',
+    'category.login-security': '登录与身份安全',
+    'category.operation-audit': '操作审计',
+    'category.mailbox': '邮箱安全',
+    'category.data-source': '数据源与许可证',
+    'section.failed-signins.title': 'AAD / Managed Identity / Service Principal 登录失败',
+    'section.identity-permission.title': 'Service Principal 对象 / 权限成功变动',
+    'section.delete-disable.title': '删除 / Disable 操作',
+    'section.suspicious-success.title': '可疑成功登录',
+    'section.suspicious-ip.title': '可疑 IP',
+    'section.license.title': 'License 使用量与剩余数量',
+    'section.shared-mailbox.title': 'SharedMailbox',
+    'section.dcr-log-errors.title': 'DCRLogErrors',
+    'section.intune-audit.title': 'Intune 审计记录',
+    'section.failed-ops.title': '其他失败/异常操作',
+    'section.source-status.title': '数据源查询状态',
+    'summary.failedSignins': '登录失败',
+    'summary.failedOperations': '失败/异常操作',
+    'summary.deleteDisable': '删除 / Disable',
+    'summary.suspiciousIp': '可疑 IP',
+    'summary.suspiciousSigninSuccess': '可信位置外成功登录',
+    'summary.mailboxLowSpace': '邮箱低容量',
+    'summary.sharedMailbox': 'SharedMailbox',
+    'summary.dcrLogErrors': 'DCRLogErrors',
+    'summary.intuneAudit': 'Intune 审计记录',
+    'field.次数': '次数', 'field.最后时间': '最后时间', 'field.IP': 'IP', 'field.主体_应用摘要': '主体/应用摘要', 'field.说明': '说明',
+    'field.表': '表', 'field.用户': '用户', 'field.操作': '操作', 'field.状态_原因': '状态/原因', 'field.时间': '时间', 'field.操作者': '操作者',
+    'field.用户身份': '用户身份', 'field.应用名称': '应用名称', 'field.原因': '原因', 'field.应用': '应用', 'field.SkuPartNumber': 'SkuPartNumber',
+    'field.产品名称': '产品名称', 'field.总数': '总数', 'field.已分配': '已分配', 'field.剩余': '剩余', 'field.状态': '状态',
+    'field.用户名': '用户名', 'field.邮箱': '邮箱', 'field.类型': '类型', 'field.总容量': '总容量', 'field.剩余容量': '剩余容量', 'field.使用率': '使用率', 'field.邮箱容量是否风险': '邮箱容量是否风险',
+    'field.输入流ID': '输入流ID', 'field.操作名称': '操作名称', 'field.消息': '消息', 'field.活动时间': '活动时间', 'field.目标': '目标', 'field.权限': '权限',
+    'field.结果_说明': '结果/说明', 'field.总记录数': '总记录数', 'field.筛选后记录数': '筛选后记录数', 'field.CSV': 'CSV'
+  },
+  'en-US': {
+    'report.title': 'Log Analytics Merged Risk Report',
+    'language.label': 'Language',
+    'nav.title': 'Contents',
+    'meta.timeRange': 'Time Range',
+    'meta.tables': 'Tables',
+    'meta.totalRecords': 'Total Records',
+    'meta.trustedIpRules': 'Trusted IP Rules',
+    'footer.generatedAt': 'Generated at',
+    'label.kql': 'KQL Query',
+    'empty.noRisk': 'No related risks found.',
+    'category.login-security': 'Sign-in & Identity Security',
+    'category.operation-audit': 'Operation Audit',
+    'category.mailbox': 'Mailbox Security',
+    'category.data-source': 'Data Sources & Licenses',
+    'section.failed-signins.title': 'AAD / Managed Identity / Service Principal Sign-in Failures',
+    'section.identity-permission.title': 'Service Principal Object / Permission Changes',
+    'section.delete-disable.title': 'Delete / Disable Operations',
+    'section.suspicious-success.title': 'Suspicious Successful Sign-ins',
+    'section.suspicious-ip.title': 'Suspicious IPs',
+    'section.license.title': 'License Usage and Remaining Count',
+    'section.shared-mailbox.title': 'Shared Mailboxes',
+    'section.dcr-log-errors.title': 'DCR Log Errors',
+    'section.intune-audit.title': 'Intune Audit Records',
+    'section.failed-ops.title': 'Other Failed / Abnormal Operations',
+    'section.source-status.title': 'Data Source Query Status',
+    'summary.failedSignins': 'Sign-in Failures',
+    'summary.failedOperations': 'Failed / Abnormal Operations',
+    'summary.deleteDisable': 'Delete / Disable',
+    'summary.suspiciousIp': 'Suspicious IPs',
+    'summary.suspiciousSigninSuccess': 'Successful Sign-ins Outside Trusted Locations',
+    'summary.mailboxLowSpace': 'Low Mailbox Capacity',
+    'summary.sharedMailbox': 'Shared Mailboxes',
+    'summary.dcrLogErrors': 'DCR Log Errors',
+    'summary.intuneAudit': 'Intune Audit Records',
+    'field.次数': 'Count', 'field.最后时间': 'Last Time', 'field.IP': 'IP', 'field.主体_应用摘要': 'Principal / App Summary', 'field.说明': 'Description',
+    'field.表': 'Table', 'field.用户': 'User', 'field.操作': 'Operation', 'field.状态_原因': 'Status / Reason', 'field.时间': 'Time', 'field.操作者': 'Actor',
+    'field.用户身份': 'Identity', 'field.应用名称': 'App Name', 'field.原因': 'Reason', 'field.应用': 'App', 'field.SkuPartNumber': 'SkuPartNumber',
+    'field.产品名称': 'Product Name', 'field.总数': 'Total', 'field.已分配': 'Assigned', 'field.剩余': 'Remaining', 'field.状态': 'Status',
+    'field.用户名': 'User Name', 'field.邮箱': 'Email', 'field.类型': 'Type', 'field.总容量': 'Total Capacity', 'field.剩余容量': 'Remaining Capacity', 'field.使用率': 'Usage', 'field.邮箱容量是否风险': 'Mailbox Capacity Risk',
+    'field.输入流ID': 'Input Stream ID', 'field.操作名称': 'Operation Name', 'field.消息': 'Message', 'field.活动时间': 'Activity Time', 'field.目标': 'Target', 'field.权限': 'Permission',
+    'field.结果_说明': 'Result / Description', 'field.总记录数': 'Total Records', 'field.筛选后记录数': 'Filtered Records', 'field.CSV': 'CSV'
+  },
+  'ja-JP': {
+    'report.title': 'Log Analytics 統合リスクレポート',
+    'language.label': '言語',
+    'nav.title': '目次',
+    'meta.timeRange': '期間',
+    'meta.tables': 'テーブル',
+    'meta.totalRecords': '総レコード数',
+    'meta.trustedIpRules': '信頼済み IP ルール',
+    'footer.generatedAt': '生成日時',
+    'label.kql': 'KQL クエリ',
+    'empty.noRisk': '関連するリスクは見つかりませんでした。',
+    'category.login-security': 'サインインと ID セキュリティ',
+    'category.operation-audit': '操作監査',
+    'category.mailbox': 'メールボックス セキュリティ',
+    'category.data-source': 'データソースとライセンス',
+    'section.failed-signins.title': 'AAD / マネージド ID / サービス プリンシパルのサインイン失敗',
+    'section.identity-permission.title': 'サービス プリンシパル オブジェクト / 権限の変更',
+    'section.delete-disable.title': '削除 / 無効化操作',
+    'section.suspicious-success.title': '疑わしい成功サインイン',
+    'section.suspicious-ip.title': '疑わしい IP',
+    'section.license.title': 'ライセンス使用量と残数',
+    'section.shared-mailbox.title': '共有メールボックス',
+    'section.dcr-log-errors.title': 'DCR ログ エラー',
+    'section.intune-audit.title': 'Intune 監査レコード',
+    'section.failed-ops.title': 'その他の失敗 / 異常操作',
+    'section.source-status.title': 'データソース クエリ状態',
+    'summary.failedSignins': 'サインイン失敗',
+    'summary.failedOperations': '失敗 / 異常操作',
+    'summary.deleteDisable': '削除 / 無効化',
+    'summary.suspiciousIp': '疑わしい IP',
+    'summary.suspiciousSigninSuccess': '信頼済み場所外の成功サインイン',
+    'summary.mailboxLowSpace': 'メールボックス容量不足',
+    'summary.sharedMailbox': '共有メールボックス',
+    'summary.dcrLogErrors': 'DCR ログ エラー',
+    'summary.intuneAudit': 'Intune 監査レコード',
+    'field.次数': '件数', 'field.最后时间': '最終時刻', 'field.IP': 'IP', 'field.主体_应用摘要': '主体 / アプリ概要', 'field.说明': '説明',
+    'field.表': 'テーブル', 'field.用户': 'ユーザー', 'field.操作': '操作', 'field.状态_原因': '状態 / 理由', 'field.时间': '時刻', 'field.操作者': '実行者',
+    'field.用户身份': 'ID', 'field.应用名称': 'アプリ名', 'field.原因': '理由', 'field.应用': 'アプリ', 'field.SkuPartNumber': 'SkuPartNumber',
+    'field.产品名称': '製品名', 'field.总数': '合計', 'field.已分配': '割り当て済み', 'field.剩余': '残数', 'field.状态': '状態',
+    'field.用户名': 'ユーザー名', 'field.邮箱': 'メール', 'field.类型': '種類', 'field.总容量': '総容量', 'field.剩余容量': '残容量', 'field.使用率': '使用率', 'field.邮箱容量是否风险': 'メールボックス容量リスク',
+    'field.输入流ID': '入力ストリーム ID', 'field.操作名称': '操作名', 'field.消息': 'メッセージ', 'field.活动时间': 'アクティビティ時刻', 'field.目标': '対象', 'field.权限': '権限',
+    'field.结果_说明': '結果 / 説明', 'field.总记录数': '総レコード数', 'field.筛选后记录数': 'フィルター後レコード数', 'field.CSV': 'CSV'
+  }
+};
+function applyLanguage(lang) {
+  const dictionary = i18n[lang] || i18n['zh-CN'];
+  document.documentElement.lang = lang;
+  document.title = dictionary['report.title'] || document.title;
+  document.querySelectorAll('[data-i18n]').forEach((element) => {
+    const key = element.getAttribute('data-i18n');
+    if (dictionary[key]) element.textContent = dictionary[key];
+  });
+  const selector = document.getElementById('languageSelect');
+  if (selector) selector.value = lang;
+  localStorage.setItem('logAnalyticsReportLanguage', lang);
+}
+const savedLanguage = localStorage.getItem('logAnalyticsReportLanguage') || 'zh-CN';
+applyLanguage(savedLanguage);
+document.getElementById('languageSelect')?.addEventListener('change', (event) => applyLanguage(event.target.value));
+</script>
 </body>
 </html>
 "@
