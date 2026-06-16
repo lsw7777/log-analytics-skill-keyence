@@ -340,10 +340,20 @@ foreach ($table in $targetTables) {
             }
         }
 
-        if (-not (Test-Path $paths.CsvFile)) {
+    if (-not (Test-Path $paths.CsvFile)) {
+        # Even if CSV file doesn't exist (filtered count = 0), include the table if total count > 0
+        if ($totalCount -gt 0) {
+            Write-Host "  Query did not generate CSV for $table (filtered=0), but total=$totalCount; including in report." -ForegroundColor Yellow
+            $csvTables.Add($table) | Out-Null
+            $csvTotalCounts.Add($totalCount) | Out-Null
+            # Create an empty CSV with header for report generation
+            'TimeGenerated' | Out-File -FilePath $paths.CsvFile -Encoding UTF8 -Force
+            $csvFiles.Add($paths.CsvFile) | Out-Null
+        } else {
             Write-Host "  Query did not generate CSV for $table; skipping." -ForegroundColor Yellow
-            continue
         }
+        continue
+    }
         if ($useTableCache) {
             $recordCount = Save-Cache -SourceCsv $paths.CsvFile -CacheCsv $paths.CacheCsv -CacheMeta $paths.CacheMeta -TableName $table -CacheTTL $CacheTTL -StartTime $StartTime -EndTime $EndTime
         }
@@ -375,7 +385,10 @@ if ($csvFiles.Count -eq 0) {
 Write-Host ''
 Write-Host '[2/3] Generating merged HTML report...' -ForegroundColor Yellow
 $analysisStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-& "$ScriptDir\generate-html-report.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray() -TotalCounts $csvTotalCounts.ToArray()
+# 计算 UTC 时间用于 KQL 语句显示
+$startUtcIso = $StartTime.ToUniversalTime().ToString('o')
+$endUtcIso = $EndTime.ToUniversalTime().ToString('o')
+& "$ScriptDir\generate-html-report.ps1" -CsvPath $csvFiles.ToArray() -OutputPath $HtmlFilePath -AnalysisDate $AnalysisDateDisplay -TableName $csvTables.ToArray() -TotalCounts $csvTotalCounts.ToArray() -StartUtc $startUtcIso -EndUtc $endUtcIso
 $analysisStopwatch.Stop()
 
 if (-not (Test-Path $HtmlFilePath)) {

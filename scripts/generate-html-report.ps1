@@ -12,7 +12,13 @@
     [string[]]$TableName,
 
     [Parameter(Mandatory = $false)]
-    [int[]]$TotalCounts
+    [int[]]$TotalCounts,
+
+    [Parameter(Mandatory = $false)]
+    [string]$StartUtc = '',
+
+    [Parameter(Mandatory = $false)]
+    [string]$EndUtc = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -108,7 +114,7 @@ function New-EventRecord {
     if (-not $lastTime) { $lastTime = [string]$Row.TimeGenerated }
     $activityDateTime = Get-AnyFieldValue -Row $Row -Names @('ActivityDateTime') -Default $lastTime
 
-    $detailFields = @('ResultSignature', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'DeliveryStatus', 'ErrorCode', 'ResultType', 'Subject', 'Message', 'ErrorMessage', 'PermissionName', 'TargetResources', 'ModifiedProperties')
+    $detailFields = @('ResultSignature', 'ResultDescription', 'ResultReason', 'FailureReason', 'Status', 'DeliveryStatus', 'ErrorCode', 'ResultType', 'Subject', 'Message', 'ErrorMessage', 'PermissionName', 'TargetResources', 'ModifiedProperties', 'Result', 'IsSuccess', 'ResultStatus')
     if ($Table -eq 'AuditLogs') {
         # 优先从 ModifiedProperties 中提取权限显示名称
         $modifiedProps = Get-AnyFieldValue -Row $Row -Names @('ModifiedProperties') -Default ''
@@ -134,7 +140,23 @@ function New-EventRecord {
     if ($Table -eq 'DCRLogErrors') {
         $detailFields = @('Message', 'ErrorMessage', 'Details', 'Description', 'Status')
     }
-    $detail = Get-AnyFieldValue -Row $Row -Names $detailFields -Default ''
+    
+    # Intune 审计记录特殊处理
+    if ($Table -eq 'IntuneAuditLogsDCR_CL') {
+        $intuneResult = Get-AnyFieldValue -Row $Row -Names @('Result', 'ResultStatus', 'Status') -Default ''
+        $intuneDesc = Get-AnyFieldValue -Row $Row -Names @('ResultDescription', 'FailureReason', 'Message', 'ErrorMessage') -Default ''
+        if ($intuneResult -and $intuneDesc -and $intuneResult -ne $intuneDesc) {
+            $detail = "$intuneResult - $intuneDesc"
+        } elseif ($intuneDesc) {
+            $detail = $intuneDesc
+        } elseif ($intuneResult) {
+            $detail = $intuneResult
+        } else {
+            $detail = ''
+        }
+    } else {
+        $detail = Get-AnyFieldValue -Row $Row -Names $detailFields -Default ''
+    }
     if ($Table -eq 'MessageTraceDataDCR_CL') {
         $traceStatus = Get-AnyFieldValue -Row $Row -Names @('Status', 'DeliveryStatus', 'EventType', 'Action', 'Result') -Default ''
         $subject = Get-AnyFieldValue -Row $Row -Names @('Subject') -Default ''
@@ -1164,9 +1186,13 @@ $microsoftTrustedNote = if ($microsoftTrustedCount -gt 0) {
     'Microsoft Service Tags 缓存不可用或未下载，本次仅使用本地可信 IP 文件。'
 }
 
-$failedSigninKql = @'
-union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+# 替换 KQL 语句中的时间变量为实际值
+$actualStartUtc = if ($StartUtc) { $StartUtc } else { '2026-06-08T02:00:00Z' }
+$actualEndUtc = if ($EndUtc) { $EndUtc } else { '2026-06-15T02:00:00Z' }
+
+$failedSigninKql = @"
+union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
 | extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
 | extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", "")))
@@ -1175,23 +1201,23 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or tolong(ResultType) > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
 | where __isFailed
 | summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription
-'@
+"@
 $failedOpsLogic = @'
 处理逻辑：
 1. 各表查询端先筛选失败/异常、删除/Disable、消息追踪异常等风险记录。
 2. 报告端排除已经单独展示的登录失败、删除/Disable、DCRLogErrors、Intune 审计等栏目。
 3. 剩余失败/异常按 表 + 用户 + 操作 + 状态/原因 合并，只显示最后时间和次数。
 '@
-$deleteDisableKql = @'
+$deleteDisableKql = @"
 union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend OperationText = strcat(column_ifexists("OperationName", ""), " ", column_ifexists("ActivityDisplayName", ""), " ", column_ifexists("Activity", ""), " ", column_ifexists("Operation", ""))
 | where tolower(OperationText) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
 | summarize LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, Result, ResultDescription
-'@
-$suspiciousSuccessKql = @'
+"@
+$suspiciousSuccessKql = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
 | extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
 | extend AppDisplayName = tostring(coalesce(column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), "Unknown"))
@@ -1203,39 +1229,39 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
 | where TableName != "SigninLogs" or AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")
 | summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType
-'@
-$suspiciousIpKql = @'
+"@
+$suspiciousIpKql = @"
 SigninLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
 | where __isPublicIp and not(__isTrustedIp)
 | summarize LastTime=max(TimeGenerated), EventCount=count() by IPAddress, AppDisplayName
-'@
+"@
 $clientIpRankLogic = @'
 处理逻辑：
 1. 从已参与报告的数据集中提取可用公网 Client IP。
 2. 排除“可疑 IP”栏目中已经出现的 IP，避免同一风险重复展示。
 3. 按出现次数倒序展示 Top 20。
 '@
-$licenseLogic = @'
+$licenseLogic = @"
 AssignedLicensesDCR_CL
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | summarize UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus
 
 补充逻辑：
 当日志中的 TotalLicenses 缺失时，报告通过 Microsoft Graph subscribedSkus 获取总量/剩余量。
-'@
+"@
 $sourceStatusLogic = @'
 处理逻辑：
 1. main.ps1 按所选时间范围逐表调用 query-log-analytics.ps1 导出 CSV。
 2. 对 DCRLogErrors、MailboxStatisticsDCR_CL、IntuneAuditLogsDCR_CL 和登录相关表跳过表级缓存，确保使用当前查询逻辑。
 3. 本栏目只展示本次实际参与合并报告的 CSV 数据源、记录数和文件名。
 '@
-$permissionKql = @'
+$permissionKql = @"
 AuditLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | where isnotempty(InitiatedBy.user.userPrincipalName)
 | where not(OperationName has "PIM" or ActivityDisplayName has "PIM" or ResultReason has "PIM activation expired")
 | extend __isSuccess = tolower(Result) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
@@ -1247,7 +1273,7 @@ AuditLogs
     "Remove app role assignment from service principal"
 )
 | summarize ActivityDateTime=max(todatetime(ActivityDateTime)), EventCount=count() by Actor, OperationName, Target, PermissionName
-'@
+"@
 
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) $r.IP }
 $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
@@ -1349,7 +1375,7 @@ $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distin
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('InputStreamId', 'OperationName', 'Message') -CellBuilder {
     param($r) @($r.Target, $r.Operation, $r.Detail)
 })
-$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
+$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) "$($r.User)|$($r.Operation)|$($r.Target)|$($r.Detail)" }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
@@ -1364,7 +1390,6 @@ $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；AuditLogs 已去掉目标字段，并按除时间外相同的记录合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。相同主体、应用、IP 已合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'client-ip-rank'; Title = '客户端 IP 排行'; Note = '此排行已排除所有出现在“可疑 IP”中的 IP。'; Content = $topClientIpHtml; Open = $false },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
     [PSCustomObject]@{ Id = 'mailbox-low-space'; Title = '邮箱容量风险'; Note = '使用 MailboxStatisticsDCR_CL 的低可用空间 KQL 在查询端直接筛选异常邮箱。'; Content = $mailboxRiskHtml; Open = $true },
     [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = '显示 MailboxStatisticsDCR_CL 中被 RecipientTypeDetails、MailboxType 或 IsSharedMailbox 字段标识为 SharedMailbox 的邮箱。'; Content = $sharedMailboxHtml; Open = $false },
@@ -1376,7 +1401,7 @@ $sectionSpecs = @(
 
 # 定义二级分类目录结构
 $categoryOrder = @(
-    [PSCustomObject]@{ Key = 'login-security'; Label = '登录与身份安全'; Icon = '🔐'; Sections = @('suspicious-success', 'suspicious-ip', 'client-ip-rank', 'failed-signins') },
+    [PSCustomObject]@{ Key = 'login-security'; Label = '登录与身份安全'; Icon = '🔐'; Sections = @('suspicious-success', 'suspicious-ip', 'failed-signins') },
     [PSCustomObject]@{ Key = 'operation-audit'; Label = '操作审计'; Icon = '📋'; Sections = @('identity-permission', 'delete-disable', 'failed-ops') },
     [PSCustomObject]@{ Key = 'mailbox'; Label = '邮箱安全'; Icon = '📧'; Sections = @('mailbox-low-space', 'shared-mailbox') },
     [PSCustomObject]@{ Key = 'data-source'; Label = '数据源与许可证'; Icon = '💾'; Sections = @('dcr-log-errors', 'intune-audit', 'license', 'source-status') }
