@@ -830,14 +830,13 @@ function Get-LogRiskFilterKql {
 | extend __isFailed = (__status in ("false","fail","failed","failure","undelivered","blocked","rejected","denied","error","timeout","quarantined","1") or (__status matches regex @"^\d+$" and toint(__status) != 0))
 | extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
 | extend __isDeleteDisable = tolower(__op) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| extend __isPublicUntrustedIp = ("$TableName" == "SigninLogs" and isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255")
-| extend __isSigninSuspiciousSuccess = ("$TableName" == "SigninLogs" and __status in ("true","success","succeeded","0") and __isPublicUntrustedIp and not(__app in ($appAllowList)))
+| extend __isSigninSuspiciousSuccess = ("$TableName" == "SigninLogs" and __status in ("true","success","succeeded","0") and not(__app in ($appAllowList)))
 | extend __isMessageTraceCritical = ("$TableName" == "MessageTraceDataDCR_CL" and __permissionText matches regex @"(?i)\b(fail(ed|ure)?|blocked|quarantined|reject(ed)?|undeliver(ed|able)?|error|timeout|bounced)\b")
 | extend __isMessageTraceBusiness = ("$TableName" == "MessageTraceDataDCR_CL" and __permissionText matches regex @"(?i)\b(Power\s*BI|PBI|SkyGuard)\b" and __permissionText matches regex @"(?i)\b(fail(ed|ure)?|blocked|quarantined|reject(ed)?|undeliver(ed|able)?|error|timeout|bounced)\b")
 | extend __isMessageTraceInteresting = (__isMessageTraceCritical or __isMessageTraceBusiness)
 | extend __isIdentityPermissionChange = ("$TableName" == "AuditLogs" and __isSuccess and __permissionText matches regex @"(?i)permission|consent|credential|secret|certificate|app role|approle|service principal|managed identity")
-| where __isFailed or __isDeleteDisable or __isPublicUntrustedIp or __isSigninSuspiciousSuccess or __isMessageTraceInteresting or __isIdentityPermissionChange
-| project-away __op, __status, __ipRaw, __ip, __app, __permissionText, __isFailed, __isSuccess, __isDeleteDisable, __isPublicUntrustedIp, __isSigninSuspiciousSuccess, __isMessageTraceCritical, __isMessageTraceBusiness, __isMessageTraceInteresting, __isIdentityPermissionChange
+| where __isFailed or __isDeleteDisable or __isSigninSuspiciousSuccess or __isMessageTraceInteresting or __isIdentityPermissionChange
+| project-away __op, __status, __ipRaw, __ip, __app, __permissionText, __isFailed, __isSuccess, __isDeleteDisable, __isSigninSuspiciousSuccess, __isMessageTraceCritical, __isMessageTraceBusiness, __isMessageTraceInteresting, __isIdentityPermissionChange
 "@
 }
 
@@ -907,8 +906,7 @@ $TableName
 | extend __resultDescriptionLower = tolower(ResultDescription)
 | extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultDescriptionLower contains "fail" or __resultDescriptionLower contains "failure" or __resultDescriptionLower contains "denied" or __resultDescriptionLower contains "error" or __resultDescriptionLower contains "timeout"
 | extend __ip = extract(@"(\d{1,3}(?:\.\d{1,3}){3})", 1, IPAddress)
-| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
-| where __isFailed or (__isSuccess and __isPublicIp)
+| where __isFailed or __isSuccess
 | extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
 | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription, __RecordKind
 $failedThresholdClause
@@ -939,10 +937,9 @@ SigninLogs
 | extend __resultDescriptionLower = tolower(ResultDescription)
 | extend __isFailed = (isnotempty(__status) and not(__isSuccess) and __status != "unknown") or __resultDescriptionLower contains "fail" or __resultDescriptionLower contains "failure" or __resultDescriptionLower contains "denied" or __resultDescriptionLower contains "error" or __resultDescriptionLower contains "timeout"
 | extend __ip = extract(@"(\d{1,3}(?:\.\d{1,3}){3})", 1, IPAddress)
-| extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
 | extend __appLower = tolower(AppDisplayName)
 | extend __isAllowedApp = __appLower in ("windows sign in", "microsoft edge", "sangfor sase vpn", "microsoft office")
-| extend __isSigninSuspiciousSuccess = (__isSuccess and __isPublicIp and not(__isAllowedApp))
+| extend __isSigninSuspiciousSuccess = (__isSuccess and not(__isAllowedApp))
 | where __isFailed or __isSigninSuspiciousSuccess
 | extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
 | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, UserDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription, __RecordKind
@@ -1084,15 +1081,15 @@ IntuneAuditLogsDCR_CL
 | extend ActorUserPrincipalName = tostring(coalesce(column_ifexists("InitiatorUserPrincipalName", ""), column_ifexists("InitiatorUserPrincipalName_s", ""), column_ifexists("ActorInitiator", ""), column_ifexists("ActorUPN", ""), column_ifexists("ActorUPN_s", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName_s", ""), column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("InitiatedByUserPrincipalName_s", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserPrincipalName_s", ""), column_ifexists("UPN", ""), column_ifexists("UPN_s", ""), column_ifexists("Actor", ""), column_ifexists("Actor_s", ""), column_ifexists("UserId", ""), column_ifexists("UserId_s", ""), column_ifexists("Identity", ""), column_ifexists("Identity_s", ""), ""))
 | extend Actor = case(isnotempty(ActorDisplayName) and isnotempty(ActorUserPrincipalName) and ActorDisplayName != ActorUserPrincipalName, strcat(ActorDisplayName, " / ", ActorUserPrincipalName), isnotempty(ActorDisplayName), ActorDisplayName, ActorUserPrincipalName)
 | extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("OperationName_s", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("ActivityDisplayName_s", ""), column_ifexists("Activity", ""), column_ifexists("Activity_s", ""), column_ifexists("Operation", ""), column_ifexists("Operation_s", ""), column_ifexists("Action", ""), column_ifexists("Action_s", ""), column_ifexists("AuditEventType", ""), column_ifexists("AuditEventType_s", ""), "Intune Audit Event"))
-| extend TargetDisplayName = tostring(coalesce(column_ifexists("TargetDisplayName", ""), column_ifexists("TargetDisplayName_s", ""), column_ifexists("Target", ""), column_ifexists("Target_s", ""), column_ifexists("ObjectId", ""), column_ifexists("ObjectId_s", ""), column_ifexists("ResourceDisplayName", ""), column_ifexists("ResourceDisplayName_s", ""), column_ifexists("DeviceName", ""), column_ifexists("DeviceName_s", ""), column_ifexists("ManagedDeviceName", ""), column_ifexists("ManagedDeviceName_s", ""), ""))
+| extend TargetDeviceName = tostring(coalesce(column_ifexists("TargetDeviceName", ""), column_ifexists("TargetDeviceName_s", ""), column_ifexists("DeviceName", ""), column_ifexists("DeviceName_s", ""), column_ifexists("ManagedDeviceName", ""), column_ifexists("ManagedDeviceName_s", ""), ""))
 | extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("Result_s", ""), column_ifexists("ResultStatus", ""), column_ifexists("ResultStatus_s", ""), column_ifexists("Status", ""), column_ifexists("Status_s", ""), column_ifexists("ActivityResult", ""), column_ifexists("ActivityResult_s", ""), column_ifexists("OperationStatus", ""), column_ifexists("OperationStatus_s", ""), ""))
 | extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("ResultDescription_s", ""), column_ifexists("FailureReason", ""), column_ifexists("FailureReason_s", ""), column_ifexists("Message", ""), column_ifexists("Message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("ErrorMessage_s", ""), ""))
 | extend __status = tolower(Result)
 | extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
 | extend __isDeleteDisable = tolower(OperationName) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
 | extend __RecordKind = case(__isDeleteDisable, "AggregatedDeleteDisable", __isFailed, "AggregatedIntuneAuditRisk", "AggregatedIntuneAuditRecord")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
-| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDeviceName, Result, ResultDescription, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDeviceName, Result, ResultDescription, __RecordKind
 "@
 }
 
