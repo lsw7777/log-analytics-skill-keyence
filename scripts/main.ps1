@@ -49,7 +49,10 @@ param(
     [switch]$NoIsolatedQueryProcess,
 
     [Parameter(Mandatory = $false)]
-    [switch]$NoRiskFilter
+    [switch]$NoRiskFilter,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipTotalCount
 )
 
 $ErrorActionPreference = 'Stop'
@@ -220,6 +223,7 @@ Write-Host "Tables: $($targetTables -join ', ')" -ForegroundColor Cyan
 Write-Host "Time range: $AnalysisDateDisplay ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
 Write-Host "Cache: $(if($UseCache){'Enabled'}else{'Disabled'})" -ForegroundColor Cyan
 Write-Host "Risk prefilter: $(if($NoRiskFilter){'Disabled'}else{'Enabled'})" -ForegroundColor Cyan
+Write-Host "Total count precheck: $(if($SkipTotalCount){'Skipped'}else{'Enabled'})" -ForegroundColor Cyan
 Write-Host "HTML: $($reportPaths.HtmlFile)" -ForegroundColor Cyan
 Write-Host ''
 
@@ -264,9 +268,12 @@ foreach ($table in $targetTables) {
 
     # Get total record count for the table (without risk filter)
     $totalCount = 0
+    if ($SkipTotalCount) {
+        Write-Host "  Total record count skipped (-SkipTotalCount)." -ForegroundColor DarkGray
+    } else {
     try {
         $totalCountQuery = New-TableTotalCountQuery -TableName $table -StartTime $StartTime -EndTime $EndTime
-        Write-Host "  Getting total record count..." -ForegroundColor DarkGray
+        Write-Host "  Getting total record count... (if this takes too long, press Ctrl+C and rerun with -SkipTotalCount)" -ForegroundColor DarkGray
         # Do NOT print the query to avoid exposing IP addresses
         # Note: Do NOT pass -TableName here, only pass -Query, otherwise the script will 
         # auto-generate a query based on the table name and ignore our count query
@@ -291,6 +298,7 @@ foreach ($table in $targetTables) {
     } catch {
         Write-Host "  Failed to get total count: $_" -ForegroundColor DarkYellow
         Write-Host "  Exception type: $($_.Exception.GetType().Name)" -ForegroundColor DarkYellow
+    }
     }
 
     if ($cacheResult -and $cacheResult.Hit) {

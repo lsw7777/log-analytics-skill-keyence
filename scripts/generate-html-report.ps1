@@ -1189,16 +1189,19 @@ $microsoftTrustedNote = if ($microsoftTrustedCount -gt 0) {
 # 替换 KQL 语句中的时间变量为实际值
 $actualStartUtc = if ($StartUtc) { $StartUtc } else { '2026-06-08T02:00:00Z' }
 $actualEndUtc = if ($EndUtc) { $EndUtc } else { '2026-06-15T02:00:00Z' }
+$trustedIpKqlLiteral = Get-TrustedIpKqlDynamicLiteral
 
 $failedSigninKql = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
 | extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", "")))
+| extend __FailureReasonRaw = tostring(column_ifexists("FailureReason", ""))
+| extend ResultDescription = case(isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, isnotempty(__FailureReasonRaw), __FailureReasonRaw, isnotempty(__StatusRaw), __StatusRaw, "")
 | extend __status = tolower(ResultType)
 | extend __isSuccess = __status in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
-| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or tolong(ResultType) > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __resultCode = tolong(ResultType)
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
 | where __isFailed
 | summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription
 "@
@@ -1211,7 +1214,11 @@ $failedOpsLogic = @'
 $deleteDisableKql = @"
 union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend OperationText = strcat(column_ifexists("OperationName", ""), " ", column_ifexists("ActivityDisplayName", ""), " ", column_ifexists("Activity", ""), " ", column_ifexists("Operation", ""))
+| extend Actor = tostring(coalesce(column_ifexists("Actor", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("UserUPN", ""), ""))
+| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("Activity", ""), column_ifexists("Operation", ""), ""))
+| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("Status", ""), column_ifexists("ResultStatus", ""), ""))
+| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("ResultReason", ""), ""))
+| extend OperationText = OperationName
 | where tolower(OperationText) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
 | summarize LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, Result, ResultDescription
 "@
@@ -1225,7 +1232,7 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend __isSuccess = tolower(ResultType) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
-| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
 | where TableName != "SigninLogs" or AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")
 | summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType
@@ -1235,7 +1242,7 @@ SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(__ip startswith "10.") and not(__ip matches regex @"^172\.(1[6-9]|2[0-9]|3[01])\.") and not(__ip startswith "192.168.") and not(__ip startswith "127.") and not(__ip startswith "169.254.") and __ip != "0.0.0.0" and __ip != "255.255.255.255"
-| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, dynamic([...Trusted IP CIDRs...]))
+| extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
 | summarize LastTime=max(TimeGenerated), EventCount=count() by IPAddress, AppDisplayName
 "@
@@ -1262,9 +1269,13 @@ $sourceStatusLogic = @'
 $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| where isnotempty(InitiatedBy.user.userPrincipalName)
+| extend __actorUpn = tostring(column_ifexists("InitiatedBy", dynamic({})).user.userPrincipalName)
+| extend Actor = iff(isnotempty(__actorUpn), __actorUpn, tostring(column_ifexists("Actor", "")))
+| extend Target = tostring(column_ifexists("TargetResources", ""))
+| extend PermissionName = tostring(column_ifexists("Category", ""))
+| where isnotempty(__actorUpn)
 | where not(OperationName has "PIM" or ActivityDisplayName has "PIM" or ResultReason has "PIM activation expired")
-| extend __isSuccess = tolower(Result) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
+| extend __isSuccess = tolower(tostring(Result)) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
 | where __isSuccess and OperationName in~ (
     "Add service principal",
     "Remove service principal",
