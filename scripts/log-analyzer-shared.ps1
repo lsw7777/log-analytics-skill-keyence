@@ -1126,17 +1126,23 @@ function New-RiskOptimizedLogTableQuery {
         [string]$EndUtc
     )
 
-    switch ($TableName) {
-        'AADManagedIdentitySignInLogs' { return New-AadIdentitySigninOptimizedQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc }
-        'AADServicePrincipalSignInLogs' { return New-AadIdentitySigninOptimizedQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc }
-        'AssignedLicensesDCR_CL' { return New-AssignedLicensesOptimizedQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc }
-        'AuditLogs' { return New-AuditLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
-        'DCRLogErrors' { return New-DcrLogErrorsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
-        'IntuneAuditLogsDCR_CL' { return New-IntuneAuditLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
-        'MailboxStatisticsDCR_CL' { return New-MailboxStatisticsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
-        'SigninLogs' { return New-SigninLogsOptimizedQuery -StartUtc $StartUtc -EndUtc $EndUtc }
-        default { throw "Unsupported log table: $TableName" }
-    }
+    return New-SafeLogTableQuery -TableName $TableName -StartUtc $StartUtc -EndUtc $EndUtc
+}
+
+function New-SafeLogTableQuery {
+    param(
+        [string]$TableName,
+        [string]$StartUtc,
+        [string]$EndUtc,
+        [int]$MaxRows = 20000
+    )
+
+    return @"
+$TableName
+| where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
+| sort by TimeGenerated desc
+| take $MaxRows
+"@
 }
 
 function New-TableTotalCountQuery {
@@ -1284,6 +1290,5 @@ function New-LogTableQuery {
         return New-RiskOptimizedLogTableQuery -TableName $TableName -StartUtc $start -EndUtc $end
     }
 
-    $query = "$TableName | where TimeGenerated >= datetime($start) and TimeGenerated < datetime($end)"
-    return "$query`n| sort by TimeGenerated desc"
+    return New-SafeLogTableQuery -TableName $TableName -StartUtc $start -EndUtc $end
 }
