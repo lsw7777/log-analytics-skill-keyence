@@ -1125,8 +1125,9 @@ MailboxStatisticsDCR_CL
 | extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __availableText))
 | extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __quotaText))
 | extend UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
-| where __isSharedMailbox or (QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05)
 | extend TotalItemSizeGB = tostring(column_ifexists("TotalItemSizeGB", ""))
+| summarize arg_max(TimeGenerated, *) by UserPrincipalName
+| where __isSharedMailbox or (QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05)
 | extend FirstTime=TimeGenerated, LastTime=TimeGenerated, EventCount=1, __RecordKind="LatestMailboxSnapshot"
 | project TimeGenerated, FirstTime, LastTime, EventCount, DisplayName, UserPrincipalName, MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, RecipientTypeDetails, MailboxType, RecipientType, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent, TotalItemSizeGB, __RecordKind
 "@

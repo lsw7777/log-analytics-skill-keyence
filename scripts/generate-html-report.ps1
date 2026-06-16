@@ -1409,12 +1409,15 @@ $mailboxRiskKql = "MailboxStatisticsDCR_CL`r`n| where AvailableSpaceGB < QuotaLi
 $mailboxRiskHtml = (New-CodeBlockHtml -Text $mailboxRiskKql) + (New-TableHtml -Rows ($mailboxRisks | Sort-Object AvailableGB | Select-Object -First 50) -Columns @('邮箱', 'AvailableSpaceGB', 'QuotaLimitGB', '使用率', '风险') -CellBuilder {
     param($r) @($r.User, $r.AvailableGB, $r.QuotaGB, $r.Usage, $r.Reason)
 })
-$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or IsSharedMailbox in~ (`"true`", `"1`", `"yes`", `"y`")`r`n| project TimeGenerated, DisplayName, RecipientTypeDetails, AvailableSpaceGB, QuotaLimitGB"
+$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize arg_max(TimeGenerated, *) by UserPrincipalName`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or IsSharedMailbox in~ (`"true`", `"1`", `"yes`", `"y`")`r`n| project TimeGenerated, DisplayName, RecipientTypeDetails, AvailableSpaceGB, QuotaLimitGB"
 $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object SizeGB -Descending | Select-Object -First 80) -Columns @('SharedMailbox', '类型', '大小GB', 'AvailableSpaceGB', 'QuotaLimitGB') -CellBuilder {
     param($r) @($r.User, $r.Type, "$($r.SizeGB) GB", $r.AvailableGB, $r.QuotaGB)
 })
+$dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message"
+$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', 'InputStreamId', 'OperationName', 'Message') -CellBuilder {
+    param($r) @($r.Time, $r.Target, $r.Operation, $r.Detail)
+})
 $permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
     param($r) 
     $permValue = $r.Detail
@@ -1435,11 +1438,6 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
     
     @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
 })
-
-$dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated > ago(30d)`r`n| distinct InputStreamId, OperationName, Message"
-$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('InputStreamId', 'OperationName', 'Message') -CellBuilder {
-    param($r) @($r.Target, $r.Operation, $r.Detail)
-})
 $intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
@@ -1457,8 +1455,8 @@ $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
     [PSCustomObject]@{ Id = 'mailbox-low-space'; Title = '邮箱容量风险'; Note = '使用 MailboxStatisticsDCR_CL 的低可用空间 KQL 在查询端直接筛选异常邮箱。'; Content = $mailboxRiskHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = '显示 MailboxStatisticsDCR_CL 中被 RecipientTypeDetails、MailboxType 或 IsSharedMailbox 字段标识为 SharedMailbox 的邮箱。'; Content = $sharedMailboxHtml; Open = $false },
-    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的 InputStreamId、OperationName、Message 去重展示。'; Content = $dcrLogErrorHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $false },
+    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true },
     [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true },
     [PSCustomObject]@{ Id = 'failed-ops'; Title = '其他失败/异常操作'; Note = '登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录；仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedOpsHtml; Open = $false },
     [PSCustomObject]@{ Id = 'source-status'; Title = '数据源查询状态'; Note = '显示本次参与生成合并报告的 CSV 数据源。'; Content = $sourceStatusHtml; Open = $false }
