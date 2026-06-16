@@ -62,7 +62,10 @@ param(
 
     ,
     [Parameter(Mandatory = $false)]
-    [switch]$VerifyLicenseGraph
+    [switch]$VerifyLicenseGraph,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SkipLicenseGraph
 )
 
 $ErrorActionPreference = 'Stop'
@@ -282,7 +285,7 @@ Write-Host "Tables: $($targetTables -join ', ')" -ForegroundColor Cyan
 Write-Host "Time range: $AnalysisDateDisplay ($($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss')))" -ForegroundColor Cyan
 Write-Host "Cache: $(if($UseCache){'Enabled'}else{'Disabled'})" -ForegroundColor Cyan
 Write-Host "Risk prefilter: $(if($NoRiskFilter){'Disabled'}else{'Enabled'})" -ForegroundColor Cyan
-Write-Host "License Graph verification: $(if($VerifyLicenseGraph){'Enabled'}else{'Skipped for speed'})" -ForegroundColor Cyan
+Write-Host "License Graph verification: $(if($SkipLicenseGraph){'Skipped for speed'}else{'Enabled'})" -ForegroundColor Cyan
 Write-Host "Total count precheck: $(if($SkipTotalCount){'Skipped'}else{'Enabled'})" -ForegroundColor Cyan
 if (-not $SkipTotalCount) { Write-Host "Total count timeout: ${TotalCountTimeoutSec}s" -ForegroundColor Cyan }
 Write-Host "HTML: $($reportPaths.HtmlFile)" -ForegroundColor Cyan
@@ -467,7 +470,8 @@ $htmlParams = @{
     StartUtc = $startUtcIso
     EndUtc = $endUtcIso
 }
-if (-not $VerifyLicenseGraph) { $htmlParams.SkipLicenseGraph = $true }
+# 默认启用 License Graph 验证，除非明确指定 -SkipLicenseGraph
+if ($SkipLicenseGraph) { $htmlParams.SkipLicenseGraph = $true }
 & "$ScriptDir\generate-html-report.ps1" @htmlParams
 $analysisStopwatch.Stop()
 

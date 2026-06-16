@@ -1060,12 +1060,11 @@ if ($graphLicenseResult.Success) {
         }
     }
     
-    # 使用 Graph API 的 SkuList，取前 4 个
+    # 固定显示指定的 4 个 License：AAD_PREMIUM_P2_CN、POWER_BI_PRO、SPE_E3_NO_WIN、EXCHANGEENTERPRISE
+    $targetLicenseNames = @('AAD_PREMIUM_P2_CN', 'POWER_BI_PRO', 'SPE_E3_NO_WIN', 'EXCHANGEENTERPRISE')
     $licenseUsage = @(
         $graphLicenseResult.SkuList |
-            Where-Object { $null -ne $_.Total -and $_.Total -gt 0 } |
-            Sort-Object @{ Expression = { if ($null -ne $_.Used) { $_.Used } else { 0 } }; Descending = $true }, License |
-            Select-Object -First 4 |
+            Where-Object { $targetLicenseNames -contains $_.License } |
             ForEach-Object {
                 $graphSkuName = [string]$_.License
                 $normalizedGraphName = Normalize-LicenseKey -Name $graphSkuName
@@ -1354,9 +1353,9 @@ $failedOpsGrouped = Group-EventRecords -Rows $failedOperations -KeyBuilder { par
 $failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Rows ($failedOpsGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', '表', '用户', '操作', '状态/原因') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
-$deleteDisableGrouped = Group-EventRecords -Rows $deleteDisableEvents -KeyBuilder { param($r) Get-DeleteDisableMergeKey -Row $r }
-$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
-    param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
+# 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生时间
+$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
+    param($r) @($r.Time, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
 $suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '原因') -CellBuilder {
     param($r) @($r.IP, $r.Reason)
@@ -1456,7 +1455,7 @@ $sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtm
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = 'AAD / Managed Identity / Service Principal 登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
     [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '仅显示用户操作者触发的 Add/Remove/Hard delete service principal，以及 Add/Remove app role assignment to service principal；PIM 相关记录已排除。'; Content = $permissionHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $deleteDisableHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
