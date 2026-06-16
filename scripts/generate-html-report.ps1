@@ -340,6 +340,14 @@ function Get-StrictEventMergeKey {
     return "$($Row.User)|$operationContent|$time"
 }
 
+function Get-DeleteDisableMergeKey {
+    param([object]$Row)
+
+    # 删除/Disable 操作栏只根据 最后时间、表、操作者、操作、结果/说明 这5个字段来判断是否合并
+    $time = if ($Row.LastTime) { $Row.LastTime } elseif ($Row.Time) { $Row.Time } else { $Row.ActivityDateTime }
+    return "$($Row.User)|$($Row.Table)|$($Row.Operation)|$($Row.Detail)|$time"
+}
+
 function Test-CachedPrivateOrInvalidIp {
     param([string]$IP)
 
@@ -1346,7 +1354,7 @@ $failedOpsGrouped = Group-EventRecords -Rows $failedOperations -KeyBuilder { par
 $failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Rows ($failedOpsGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', '表', '用户', '操作', '状态/原因') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
-$deleteDisableGrouped = Group-EventRecords -Rows $deleteDisableEvents -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
+$deleteDisableGrouped = Group-EventRecords -Rows $deleteDisableEvents -KeyBuilder { param($r) Get-DeleteDisableMergeKey -Row $r }
 $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
