@@ -1384,10 +1384,10 @@ $failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Row
     param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
 # 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生时间
-$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作', '结果/说明') -CellBuilder {
-    param($r) @($r.Time, $r.Table, $r.User, $r.Operation, $r.Detail)
+$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作') -CellBuilder {
+    param($r) @($r.Time, $r.Table, $r.User, $r.Operation)
 })
-$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', 'Identity', 'AppDisplayName', '次数', '原因') -CellBuilder {
+$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '用户身份', '应用名称', '次数', '原因') -CellBuilder {
     param($r) @($r.IP, $r.Identity, $r.AppDisplayName, $r.Count, $r.Reason)
 })
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
@@ -1445,11 +1445,11 @@ $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtm
     param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.TotalCapacityGB, $r.RemainingCapacityGB, $r.Usage, $r.CapacityRisk)
 })
 $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message"
-$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', 'InputStreamId', 'OperationName', 'Message') -CellBuilder {
+$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) @($r.Time, $r.Target, $r.Operation, $r.Detail)
 })
 $permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('Timestamp(ActivityDateTime)', 'Actor', 'Operation', 'Target', 'Permission') -CellBuilder {
+$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('活动时间', '操作者', '操作', '目标', '权限') -CellBuilder {
     param($r) 
     $permValue = $r.Detail
     
@@ -1471,7 +1471,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
 })
 $intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDeviceName, Result, ResultDescription"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', 'Actor', 'Operation', 'Target', '结果/说明') -CellBuilder {
+$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
 })
 $sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtml -Rows $sourceStatusRows -Columns @('表', '总记录数', '筛选后记录数', 'CSV') -CellBuilder {
