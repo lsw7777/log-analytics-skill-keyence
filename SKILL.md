@@ -14,6 +14,45 @@ license: 专有
 
 ## 运行方式
 
+### Agent / OpenCode 自然语言启动
+
+当用户在 OpenCode 或其他支持 Skill 的 Agent 中提出类似下面的自然语言请求时，应直接调用本 skill 的包装脚本，不要再要求用户手动选择时间：
+
+```text
+查询最近15天的微软日志
+生成最近7天的 Log Analytics 风险报告
+查最近3小时的登录风险
+```
+
+Agent 应在 skill 根目录执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-skill.ps1 "查询最近15天的微软日志"
+```
+
+`run-skill.ps1` 会把自然语言传给 `main.ps1 -Prompt`，自动解析 `最近 n 天`、`近 n 天`、`last n days`、`最近 n 小时`、`last n hours`，并默认使用 `-SkipTotalCount -NoOpen`，避免在 Agent 环境中卡在总数预检查或弹出浏览器。脚本结束后会在输出中打印：
+
+```text
+HTML: <生成的 HTML 报告完整路径>
+URL: file:///...
+```
+
+Agent 需要把 `HTML:` 后面的路径明确告诉用户，例如“报告已生成在：...”。
+
+也可以直接调用 `main.ps1`：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\main.ps1 -Prompt "查询最近15天的微软日志" -SkipTotalCount -NoOpen
+```
+
+如果用户明确指定表，可以加 `-TableName`，例如：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-skill.ps1 "查询最近1天的登录日志" -TableName "SigninLogs"
+```
+
+### 手工启动
+
 在 skill 根目录运行：
 
 ```powershell

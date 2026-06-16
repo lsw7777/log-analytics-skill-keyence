@@ -4,6 +4,9 @@
 
 param(
     [Parameter(Mandatory = $false)]
+    [string]$Prompt = "",
+
+    [Parameter(Mandatory = $false)]
     [string]$TableName = "",
 
     [Parameter(Mandatory = $false)]
@@ -99,6 +102,48 @@ function Format-LogElapsed {
     return ('{0:N1} sec' -f $Elapsed.TotalSeconds)
 }
 
+function Resolve-SkillPromptTimeRange {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt,
+
+        [datetime]$Now = (Get-Date)
+    )
+
+    $text = $Prompt.Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        throw 'Prompt cannot be empty.'
+    }
+
+    $roundedNow = [datetime]::new($Now.Year, $Now.Month, $Now.Day, $Now.Hour, 0, 0)
+    $match = [regex]::Match($text, '(?i)(最近|近|last)\s*(\d{1,2})\s*(天|日|days?|d)')
+    if ($match.Success) {
+        $days = [int]$match.Groups[2].Value
+        return Get-RelativeLogTimeRange -Now $roundedNow -Days $days
+    }
+
+    $match = [regex]::Match($text, '(?i)(最近|近|last)\s*(\d{1,3})\s*(小时|小時|hours?|hrs?|h)')
+    if ($match.Success) {
+        $hours = [int]$match.Groups[2].Value
+        if ($hours -le 0 -or $hours -gt (90 * 24)) {
+            throw 'Hours must be between 1 and 2160.'
+        }
+        $startTime = $roundedNow.AddHours(-$hours)
+        return [PSCustomObject]@{
+            StartTime = $startTime
+            EndTime = $roundedNow
+            AnalysisDateStr = "$($startTime.ToString('yyyyMMddHHmm'))_$($roundedNow.ToString('yyyyMMddHHmm'))"
+            AnalysisDateDisplay = "$($startTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($roundedNow.ToString('yyyy-MM-dd HH:mm:ss'))"
+        }
+    }
+
+    if ($text -match '(?i)最近\s*三\s*(小时|小時)|last\s*3\s*(hours?|hrs?|h)') {
+        return Get-RelativeLogTimeRange -Now $roundedNow -Days 0
+    }
+
+    throw "Cannot parse time range from prompt: $Prompt. Try '查询最近15天的微软日志' or use -StartDate/-EndDate."
+}
+
 function Test-Cache {
     param(
         [string]$CacheCsv,
@@ -180,6 +225,13 @@ if ($CustomStart -and $CustomEnd) {
     Assert-LogTimeRangeWithinLimit -StartTime $StartTime -EndTime $EndTime
     $AnalysisDateStr = "$($StartTime.ToString('yyyyMMddHHmm'))_$($EndTime.ToString('yyyyMMddHHmm'))"
     $AnalysisDateDisplay = "$($StartTime.ToString('yyyy-MM-dd HH:mm:ss')) to $($EndTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+}
+elseif ($Prompt) {
+    $range = Resolve-SkillPromptTimeRange -Prompt $Prompt -Now $Now
+    $StartTime = $range.StartTime
+    $EndTime = $range.EndTime
+    $AnalysisDateStr = $range.AnalysisDateStr
+    $AnalysisDateDisplay = $range.AnalysisDateDisplay
 }
 elseif ($AnalysisDate) {
     $range = Get-LogTimeRangeFromDates -StartDate $AnalysisDate -EndDate $AnalysisDate
