@@ -267,7 +267,7 @@ foreach ($table in $targetTables) {
     try {
         $totalCountQuery = New-TableTotalCountQuery -TableName $table -StartTime $StartTime -EndTime $EndTime
         Write-Host "  Getting total record count..." -ForegroundColor DarkGray
-        Write-Host "  Query: $totalCountQuery" -ForegroundColor DarkGray
+        # Do NOT print the query to avoid exposing IP addresses
         # Note: Do NOT pass -TableName here, only pass -Query, otherwise the script will 
         # auto-generate a query based on the table name and ignore our count query
         $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -ErrorAction Stop 2>&1

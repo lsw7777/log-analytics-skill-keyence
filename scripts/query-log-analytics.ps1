@@ -267,13 +267,11 @@ function Invoke-LogQuery {
         if (-not $RawCount) {
             Write-Host "`nQuery failed!" -ForegroundColor Red
 
-            # 显示完整的查询语句以便调试
+            # 显示查询摘要信息（不打印完整查询以避免暴露IP地址）
             Write-Host "`n=== Query Debug Info ===" -ForegroundColor Yellow
             Write-Host "Table: $TableName" -ForegroundColor Yellow
             Write-Host "Query length: $($Query.Length) characters" -ForegroundColor Yellow
-            Write-Host "`n--- Full Query ---" -ForegroundColor Yellow
-            Write-Host $Query -ForegroundColor Gray
-            Write-Host "--- End Query ---" -ForegroundColor Yellow
+            # Do NOT print the full query to avoid exposing IP addresses
 
             if ($_.Exception.Message -match "401") {
                 Write-Host "Status code: 401 (Authentication failed)" -ForegroundColor Red
