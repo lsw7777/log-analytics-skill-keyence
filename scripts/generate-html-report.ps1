@@ -317,7 +317,7 @@ function Get-LatestMailboxRows {
 function Get-MailboxTypeText {
     param([object]$Row)
 
-    return Get-AnyFieldValue -Row $Row -Names @('RecipientTypeDetails', 'RecipientTypeDetail', 'RecipientTypeDetails_s', 'MailboxRecipientType', 'MailboxType', 'RecipientType') -Default ''
+    return Get-AnyFieldValue -Row $Row -Names @('RecipientTypeDetails', 'RecipientTypeDetails_s', 'RecipientTypeDetail', 'RecipientTypeDetail_s', 'MailboxRecipientType', 'MailboxRecipientType_s', 'MailboxType', 'MailboxType_s', 'RecipientType', 'RecipientType_s') -Default ''
 }
 
 function Test-SharedMailboxRow {
@@ -326,7 +326,7 @@ function Test-SharedMailboxRow {
     $type = Get-MailboxTypeText -Row $Row
     if ($type -match '(?i)shared') { return $true }
 
-    $flag = Get-AnyFieldValue -Row $Row -Names @('IsSharedMailbox', 'IsSharedMailBox', 'IsShared', 'SharedMailbox', 'SharedMailBox') -Default ''
+    $flag = Get-AnyFieldValue -Row $Row -Names @('IsSharedMailbox', 'IsSharedMailbox_s', 'IsSharedMailBox', 'IsSharedMailBox_s', 'IsShared', 'IsShared_s', 'SharedMailbox', 'SharedMailbox_s', 'SharedMailBox', 'SharedMailBox_s') -Default ''
     if ($flag -match '(?i)^(true|1|yes|y|shared|shared\s*mail\s*box|sharedmailbox)$') { return $true }
     return $false
 }
@@ -1317,8 +1317,8 @@ if ($licenseUsage.Count -eq 0) {
 $sharedMailboxRows = [System.Collections.Generic.List[object]]::new()
 $mailboxRows = Get-LatestMailboxRows -Rows @($datasets | Where-Object { $_.Table -eq 'MailboxStatisticsDCR_CL' } | ForEach-Object { $_.Rows })
 foreach ($row in $mailboxRows) {
-    $available = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('AvailableSpaceGB', 'AvailableSpaceInGB', 'AvailableSpace') -Default '')
-    $quota = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('QuotaLimitGB', 'QuotaGB', 'StorageQuotaGB', 'ProhibitSendReceiveQuotaGB') -Default '')
+    $available = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('AvailableSpaceGB', 'AvailableSpaceGB_d', 'AvailableSpaceGB_r', 'AvailableSpaceGB_s', 'AvailableSpaceInGB', 'AvailableSpaceInGB_d', 'AvailableSpaceInGB_r', 'AvailableSpaceInGB_s', 'AvailableSpace', 'AvailableSpace_d', 'AvailableSpace_r', 'AvailableSpace_s') -Default '')
+    $quota = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('QuotaLimitGB', 'QuotaLimitGB_d', 'QuotaLimitGB_r', 'QuotaLimitGB_s', 'QuotaGB', 'QuotaGB_d', 'QuotaGB_r', 'QuotaGB_s', 'StorageQuotaGB', 'StorageQuotaGB_d', 'StorageQuotaGB_r', 'StorageQuotaGB_s', 'ProhibitSendReceiveQuotaGB', 'ProhibitSendReceiveQuotaGB_d', 'ProhibitSendReceiveQuotaGB_r', 'ProhibitSendReceiveQuotaGB_s') -Default '')
     $usagePercent = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('UsagePercent') -Default '')
     $user = Get-UserValue -Row $row -TableName 'MailboxStatisticsDCR_CL'
     $size = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('TotalItemSizeGB', 'TotalItemSizeInGB', 'MailboxSizeGB', 'MailboxSize', 'SizeGB', 'TotalSizeGB', 'TotalItemSize', 'StorageUsedGB', 'StorageUsed') -Default '')
@@ -1533,17 +1533,16 @@ $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $l
 $sharedMailboxKql = @"
 MailboxStatisticsDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend RecipientTypeDetailsText = tostring(column_ifexists("RecipientTypeDetails", "")), RecipientTypeDetailText = tostring(column_ifexists("RecipientTypeDetail", "")), RecipientTypeDetailsSuffixText = tostring(column_ifexists("RecipientTypeDetails_s", ""))
-| extend MailboxTypeText = tostring(column_ifexists("MailboxType", "")), MailboxRecipientTypeText = tostring(column_ifexists("MailboxRecipientType", "")), RecipientTypeText = tostring(column_ifexists("RecipientType", ""))
-| extend IsSharedMailboxText = tostring(column_ifexists("IsSharedMailbox", "")), IsSharedMailBoxText = tostring(column_ifexists("IsSharedMailBox", "")), IsSharedText = tostring(column_ifexists("IsShared", "")), SharedMailboxText = tostring(column_ifexists("SharedMailbox", "")), SharedMailBoxText = tostring(column_ifexists("SharedMailBox", ""))
-| extend AvailableSpaceGBValue = todouble(column_ifexists("AvailableSpaceGB", real(null))), AvailableSpaceInGBValue = todouble(column_ifexists("AvailableSpaceInGB", real(null))), AvailableSpaceValue = todouble(column_ifexists("AvailableSpace", real(null)))
-| extend QuotaLimitGBValue = todouble(column_ifexists("QuotaLimitGB", real(null))), QuotaGBValue = todouble(column_ifexists("QuotaGB", real(null))), StorageQuotaGBValue = todouble(column_ifexists("StorageQuotaGB", real(null))), ProhibitSendReceiveQuotaGBValue = todouble(column_ifexists("ProhibitSendReceiveQuotaGB", real(null)))
-| extend AvailableGB = coalesce(AvailableSpaceGBValue, AvailableSpaceInGBValue, AvailableSpaceValue), QuotaGB = coalesce(QuotaLimitGBValue, QuotaGBValue, StorageQuotaGBValue, ProhibitSendReceiveQuotaGBValue)
+| extend RecipientTypeDetailsText = strcat(" ", tostring(column_ifexists("RecipientTypeDetails", "")), " ", tostring(column_ifexists("RecipientTypeDetails_s", "")), " ", tostring(column_ifexists("RecipientTypeDetail", "")), " ", tostring(column_ifexists("RecipientTypeDetail_s", "")))
+| extend MailboxTypeText = strcat(" ", tostring(column_ifexists("MailboxType", "")), " ", tostring(column_ifexists("MailboxType_s", "")), " ", tostring(column_ifexists("MailboxRecipientType", "")), " ", tostring(column_ifexists("MailboxRecipientType_s", "")), " ", tostring(column_ifexists("RecipientType", "")), " ", tostring(column_ifexists("RecipientType_s", "")))
+| extend SharedFlagCombined = strcat(" ", tostring(column_ifexists("IsSharedMailbox", "")), " ", tostring(column_ifexists("IsSharedMailbox_s", "")), " ", tostring(column_ifexists("IsSharedMailBox", "")), " ", tostring(column_ifexists("IsSharedMailBox_s", "")), " ", tostring(column_ifexists("IsShared", "")), " ", tostring(column_ifexists("IsShared_s", "")), " ", tostring(column_ifexists("SharedMailbox", "")), " ", tostring(column_ifexists("SharedMailbox_s", "")), " ", tostring(column_ifexists("SharedMailBox", "")), " ", tostring(column_ifexists("SharedMailBox_s", "")))
+| extend AvailableText = strcat(" ", tostring(column_ifexists("AvailableSpaceGB", "")), " ", tostring(column_ifexists("AvailableSpaceGB_d", "")), " ", tostring(column_ifexists("AvailableSpaceGB_r", "")), " ", tostring(column_ifexists("AvailableSpaceGB_s", "")), " ", tostring(column_ifexists("AvailableSpaceInGB", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_d", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_r", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_s", "")), " ", tostring(column_ifexists("AvailableSpace", "")), " ", tostring(column_ifexists("AvailableSpace_d", "")), " ", tostring(column_ifexists("AvailableSpace_r", "")), " ", tostring(column_ifexists("AvailableSpace_s", "")))
+| extend QuotaText = strcat(" ", tostring(column_ifexists("QuotaLimitGB", "")), " ", tostring(column_ifexists("QuotaLimitGB_d", "")), " ", tostring(column_ifexists("QuotaLimitGB_r", "")), " ", tostring(column_ifexists("QuotaLimitGB_s", "")), " ", tostring(column_ifexists("QuotaGB", "")), " ", tostring(column_ifexists("QuotaGB_d", "")), " ", tostring(column_ifexists("QuotaGB_r", "")), " ", tostring(column_ifexists("QuotaGB_s", "")), " ", tostring(column_ifexists("StorageQuotaGB", "")), " ", tostring(column_ifexists("StorageQuotaGB_d", "")), " ", tostring(column_ifexists("StorageQuotaGB_r", "")), " ", tostring(column_ifexists("StorageQuotaGB_s", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_d", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_r", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_s", "")))
+| extend AvailableGB = todouble(extract(@"-?\d+(\.\d+)?", 0, AvailableText)), QuotaGB = todouble(extract(@"-?\d+(\.\d+)?", 0, QuotaText))
 | extend CapacityRisk = isnotnull(QuotaGB) and QuotaGB > 0 and isnotnull(AvailableGB) and AvailableGB < QuotaGB * 0.05
-| extend MailboxTypeCombined = strcat(RecipientTypeDetailsText, " ", RecipientTypeDetailText, " ", RecipientTypeDetailsSuffixText, " ", MailboxTypeText, " ", MailboxRecipientTypeText, " ", RecipientTypeText)
-| extend SharedFlagCombined = strcat(IsSharedMailboxText, " ", IsSharedMailBoxText, " ", IsSharedText, " ", SharedMailboxText, " ", SharedMailBoxText)
-| where MailboxTypeCombined has "Shared" or SharedFlagCombined has_any ("true", "1", "yes", "y", "shared", "sharedmailbox") or CapacityRisk
-| project-away RecipientTypeDetailsText, RecipientTypeDetailText, RecipientTypeDetailsSuffixText, MailboxTypeText, MailboxRecipientTypeText, RecipientTypeText, IsSharedMailboxText, IsSharedMailBoxText, IsSharedText, SharedMailboxText, SharedMailBoxText, AvailableSpaceGBValue, AvailableSpaceInGBValue, AvailableSpaceValue, QuotaLimitGBValue, QuotaGBValue, StorageQuotaGBValue, ProhibitSendReceiveQuotaGBValue, MailboxTypeCombined, SharedFlagCombined
+| extend MailboxTypeCombined = strcat(RecipientTypeDetailsText, " ", MailboxTypeText)
+| where MailboxTypeCombined has "Shared" or tolower(SharedFlagCombined) has_any ("true", "1", "yes", "y", "shared", "sharedmailbox") or CapacityRisk
+| project-away RecipientTypeDetailsText, MailboxTypeText, SharedFlagCombined, AvailableText, QuotaText, MailboxTypeCombined
 "@
 $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
     param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.CapacityText, $r.CapacityRisk)
