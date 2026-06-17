@@ -1453,7 +1453,36 @@ $licenseLogic = @"
 AssignedLicensesDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 "@
-$permissionKql = New-RiskOptimizedLogTableQuery -TableName 'AuditLogs' -StartUtc $actualStartUtc -EndUtc $actualEndUtc
+
+$permissionKql = @"
+AuditLogs
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| where tostring(Result) =~ "success"
+| where OperationName in (
+    "Add app role assignment to service principal",
+    "Add app role assignment to user",
+    "Add app role assignment to group",
+    "Add delegated permission grant",
+    "Add application",
+    "Update application",
+    "Consent to application",
+    "Add owner to application",
+    "Remove app role assignment from service principal",
+    "Remove delegated permission grant",
+    "Add service principal",
+    "Update service principal",
+    "Delete application",
+    "Delete service principal"
+)
+| project TimeGenerated, 
+    OperationName, 
+    Actor = tostring(InitiatedBy.User.UserPrincipalName),
+    Target = tostring(TargetResources),
+    Result,
+    CorrelationId
+| order by TimeGenerated desc
+"@
+
 
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
@@ -1516,20 +1545,8 @@ $licenseTableRows = @(
 $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseTableRows -Columns @('SkuPartNumber', '产品名称', '总数', '已分配', '剩余', '状态') -CellBuilder {
     param($r) @($r.SkuPartNumber, $r.ProductName, $r.Total, $r.Used, $r.Remaining, $r.Status)
 } -RawHtmlColumns @('状态'))
-$sharedMailboxKql = @"
-MailboxStatisticsDCR_CL
-| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend RecipientTypeDetailsText = strcat(" ", tostring(column_ifexists("RecipientTypeDetails", "")), " ", tostring(column_ifexists("RecipientTypeDetails_s", "")), " ", tostring(column_ifexists("RecipientTypeDetail", "")), " ", tostring(column_ifexists("RecipientTypeDetail_s", "")))
-| extend MailboxTypeText = strcat(" ", tostring(column_ifexists("MailboxType", "")), " ", tostring(column_ifexists("MailboxType_s", "")), " ", tostring(column_ifexists("MailboxRecipientType", "")), " ", tostring(column_ifexists("MailboxRecipientType_s", "")), " ", tostring(column_ifexists("RecipientType", "")), " ", tostring(column_ifexists("RecipientType_s", "")))
-| extend SharedFlagCombined = strcat(" ", tostring(column_ifexists("IsSharedMailbox", "")), " ", tostring(column_ifexists("IsSharedMailbox_s", "")), " ", tostring(column_ifexists("IsSharedMailBox", "")), " ", tostring(column_ifexists("IsSharedMailBox_s", "")), " ", tostring(column_ifexists("IsShared", "")), " ", tostring(column_ifexists("IsShared_s", "")), " ", tostring(column_ifexists("SharedMailbox", "")), " ", tostring(column_ifexists("SharedMailbox_s", "")), " ", tostring(column_ifexists("SharedMailBox", "")), " ", tostring(column_ifexists("SharedMailBox_s", "")))
-| extend AvailableText = strcat(" ", tostring(column_ifexists("AvailableSpaceGB", "")), " ", tostring(column_ifexists("AvailableSpaceGB_d", "")), " ", tostring(column_ifexists("AvailableSpaceGB_r", "")), " ", tostring(column_ifexists("AvailableSpaceGB_s", "")), " ", tostring(column_ifexists("AvailableSpaceInGB", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_d", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_r", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_s", "")), " ", tostring(column_ifexists("AvailableSpace", "")), " ", tostring(column_ifexists("AvailableSpace_d", "")), " ", tostring(column_ifexists("AvailableSpace_r", "")), " ", tostring(column_ifexists("AvailableSpace_s", "")))
-| extend QuotaText = strcat(" ", tostring(column_ifexists("QuotaLimitGB", "")), " ", tostring(column_ifexists("QuotaLimitGB_d", "")), " ", tostring(column_ifexists("QuotaLimitGB_r", "")), " ", tostring(column_ifexists("QuotaLimitGB_s", "")), " ", tostring(column_ifexists("QuotaGB", "")), " ", tostring(column_ifexists("QuotaGB_d", "")), " ", tostring(column_ifexists("QuotaGB_r", "")), " ", tostring(column_ifexists("QuotaGB_s", "")), " ", tostring(column_ifexists("StorageQuotaGB", "")), " ", tostring(column_ifexists("StorageQuotaGB_d", "")), " ", tostring(column_ifexists("StorageQuotaGB_r", "")), " ", tostring(column_ifexists("StorageQuotaGB_s", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_d", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_r", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_s", "")))
-| extend AvailableGB = todouble(extract(@"-?\d+(\.\d+)?", 0, AvailableText)), QuotaGB = todouble(extract(@"-?\d+(\.\d+)?", 0, QuotaText))
-| extend CapacityRisk = isnotnull(QuotaGB) and QuotaGB > 0 and isnotnull(AvailableGB) and AvailableGB < QuotaGB * 0.05
-| extend MailboxTypeCombined = strcat(RecipientTypeDetailsText, " ", MailboxTypeText)
-| where MailboxTypeCombined has "Shared" or tolower(SharedFlagCombined) has_any ("true", "1", "yes", "y", "shared", "sharedmailbox") or CapacityRisk
-| project-away RecipientTypeDetailsText, MailboxTypeText, SharedFlagCombined, AvailableText, QuotaText, MailboxTypeCombined
-"@
+# 使用与实际查询相同的函数生成KQL，确保报告中显示的KQL可以直接执行
+$sharedMailboxKql = New-MailboxStatisticsOptimizedQuery -StartUtc $actualStartUtc -EndUtc $actualEndUtc
 $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
     param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.CapacityText, $r.CapacityRisk)
 })
