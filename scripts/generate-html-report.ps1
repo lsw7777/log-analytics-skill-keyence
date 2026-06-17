@@ -1413,7 +1413,7 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend IPAddressText = case(isnotempty(tostring(column_ifexists("IPAddress", ""))), tostring(column_ifexists("IPAddress", "")), isnotempty(tostring(column_ifexists("IpAddress", ""))), tostring(column_ifexists("IpAddress", "")), isnotempty(tostring(column_ifexists("ClientIP", ""))), tostring(column_ifexists("ClientIP", "")), tostring(column_ifexists("ClientIpAddress", "")))
 | extend __status = tolower(ResultType), __resultCode = tolong(ResultType)
 | extend __isSuccess = __status in ("true","success","succeeded","completed","complete","ok","pass","passed","0") or __resultCode == 0
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddressText)
+| extend __ip = extract(@"(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])", 1, IPAddressText)
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
@@ -1426,7 +1426,7 @@ $suspiciousIpKql = @"
 SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend IPAddressText = tostring(column_ifexists("IPAddress", ""))
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddressText)
+| extend __ip = extract(@"(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])", 1, IPAddressText)
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
@@ -1437,7 +1437,7 @@ SigninLogs
     SigninLogs
     | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
     | extend IPAddressText = tostring(column_ifexists("IPAddress", ""))
-    | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddressText)
+    | extend __ip = extract(@"(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])", 1, IPAddressText)
     | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
     | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
     | where __isPublicIp and not(__isTrustedIp)
@@ -1455,7 +1455,7 @@ $clientIpRankLogic = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs, AuditLogs, DCRLogErrors, IntuneAuditLogsDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend ClientIp = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), column_ifexists("CallerIpAddress", "")))
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, ClientIp)
+| extend __ip = extract(@"(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])", 1, ClientIp)
 | where isnotempty(__ip) and not(ipv4_is_private(__ip))
 | project-away __ip
 "@
