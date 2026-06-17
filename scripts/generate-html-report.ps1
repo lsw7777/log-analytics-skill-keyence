@@ -1275,6 +1275,7 @@ foreach ($row in $mailboxRows) {
             TotalCapacityGB = if ($null -ne $quota) { [Math]::Round($quota, 2) } else { 'N/A' }
             RemainingCapacityGB = if ($null -ne $available) { [Math]::Round($available, 2) } else { 'N/A' }
             Usage = if ($null -ne $usagePercent) { "$usagePercent%" } elseif ($isCapacityRisk) { '{0:P1}' -f (1 - ($available / $quota)) } else { 'N/A' }
+            CapacityText = if ($null -ne $available -and $null -ne $quota) { "$([Math]::Round($available, 2))/$([Math]::Round($quota, 2))" } else { 'N/A' }
             CapacityRisk = if ($isCapacityRisk) { '是' } else { '否' }
             CapacityRiskSort = if ($isCapacityRisk) { 0 } else { 1 }
             RemainingSort = if ($null -ne $available) { [double]$available } else { [double]::MaxValue }
@@ -1334,7 +1335,7 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend __resultCode = tolong(ResultType)
 | extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
 | where __isFailed
-| summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription
+| project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __FailureReasonRaw, __status, __isSuccess, __resultCode, __isFailed
 "@
 $deleteDisableKql = @"
 union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
@@ -1345,7 +1346,7 @@ union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
 | extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("ResultReason", ""), ""))
 | extend OperationText = OperationName
 | where tolower(OperationText) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| summarize LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, Result, ResultDescription
+| project-away OperationText
 "@
 $suspiciousSuccessKql = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
@@ -1356,34 +1357,32 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
 | extend __isSuccess = tolower(ResultType) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
-| where TableName != "SigninLogs" or AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")
-| summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType
+| where AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")
+| project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __isSuccess, __ip, __isPublicIp, __isTrustedIp
 "@
 $suspiciousIpKql = @"
 SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
-| project TimeGenerated, IPAddress=__ip
-
-报告端滑动窗口逻辑：同一 IP 在任意连续 3 天窗口内出现次数 >= 10 时，视为可疑 IP；仅显示 IP 和该窗口内最大次数。
+| project-away __ip, __isPublicIp, __isTrustedIp
 "@
-$clientIpRankLogic = @'
-处理逻辑：
-1. 从已参与报告的数据集中提取可用公网 Client IP。
-2. 排除“可疑 IP”栏目中已经出现的 IP，避免同一风险重复展示。
-3. 按出现次数倒序展示 Top 20。
-'@
+$clientIpRankLogic = @"
+union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs, AuditLogs, DCRLogErrors, IntuneAuditLogsDCR_CL
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| extend ClientIp = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), column_ifexists("CallerIpAddress", "")))
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, ClientIp)
+| where isnotempty(__ip) and not(ipv4_is_private(__ip))
+| project-away __ip
+"@
 $licenseLogic = @"
 AssignedLicensesDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| summarize UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber, ServicePlanName, LicenseName, ProvisioningStatus
-
-补充逻辑：
-当日志中的 TotalLicenses 缺失时，报告通过 Microsoft Graph subscribedSkus 获取总量/剩余量。
 "@
 $permissionKql = @"
 AuditLogs
@@ -1452,11 +1451,11 @@ $licenseTableRows = @(
 $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseTableRows -Columns @('SkuPartNumber', '产品名称', '总数', '已分配', '剩余', '状态') -CellBuilder {
     param($r) @($r.SkuPartNumber, $r.ProductName, $r.Total, $r.Used, $r.Remaining, $r.Status)
 } -RawHtmlColumns @('状态'))
-$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize arg_max(TimeGenerated, *) by UserPrincipalName`r`n| extend CapacityRisk = QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or IsSharedMailbox in~ (`"true`", `"1`", `"yes`", `"y`") or CapacityRisk`r`n| project TimeGenerated, DisplayName, EmailAddress, RecipientTypeDetails, QuotaLimitGB, AvailableSpaceGB, CapacityRisk"
-$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '总容量', '剩余容量', '使用率', '邮箱容量是否风险') -CellBuilder {
-    param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.TotalCapacityGB, $r.RemainingCapacityGB, $r.Usage, $r.CapacityRisk)
+$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend CapacityRisk = todouble(QuotaLimitGB) > 0 and isnotnull(todouble(AvailableSpaceGB)) and todouble(AvailableSpaceGB) < todouble(QuotaLimitGB) * 0.05`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or tostring(IsSharedMailbox) in~ (`"true`", `"1`", `"yes`", `"y`") or CapacityRisk`r`n| project-away CapacityRisk"
+$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
+    param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.CapacityText, $r.CapacityRisk)
 })
-$dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| summarize LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message"
+$dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)"
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) @($r.Time, $r.Target, $r.Operation, $r.Detail)
 })
@@ -1480,7 +1479,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
     
     @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
 })
-$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend ActorInitiator = tostring(coalesce(column_ifexists('ActorInitiator', ''), column_ifexists('Actor', '')))`r`n| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDeviceName, Result, ResultDescription"
+$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
