@@ -1386,13 +1386,6 @@ $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __isSuccess = tolower(tostring(Result)) == "success"
-| where OperationName in~ (
-    "Add service principal",
-    "Remove service principal",
-    "Hard delete service principal",
-    "Add app role assignment to service principal",
-    "Remove app role assignment from service principal"
-)
 | summarize ActivityDateTime=max(todatetime(ActivityDateTime)), EventCount=count() by Actor, OperationName, Target, PermissionName
 "@
 
