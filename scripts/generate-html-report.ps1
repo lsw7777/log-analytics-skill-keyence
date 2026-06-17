@@ -249,6 +249,46 @@ function Get-TimeValueForSort {
     try { return [DateTime]::Parse($Value) } catch { return [DateTime]::MinValue }
 }
 
+function Get-RowTimeValue {
+    param([object]$Row)
+
+    $timeText = Get-AnyFieldValue -Row $Row -Names @('LastTime', 'TimeGenerated', 'StartTime', 'FirstTime', 'CreatedDateTime') -Default ''
+    return Get-TimeValueForSort -Value $timeText
+}
+
+function Get-SuspiciousIpSlidingWindowRows {
+    param(
+        [object[]]$Rows,
+        [int]$WindowDays = 3,
+        [int]$Threshold = 10
+    )
+
+    $result = [System.Collections.Generic.List[object]]::new()
+    foreach ($group in @($Rows | Group-Object -Property IP)) {
+        $events = @($group.Group | Where-Object { $_.TimeValue -ne [DateTime]::MinValue } | Sort-Object TimeValue)
+        if ($events.Count -eq 0) { continue }
+
+        $left = 0
+        $windowCount = 0
+        $maxWindowCount = 0
+        for ($right = 0; $right -lt $events.Count; $right++) {
+            $windowCount += [int]$events[$right].Count
+            $windowEnd = $events[$right].TimeValue
+            while ($left -le $right -and $events[$left].TimeValue -lt $windowEnd.AddDays(-$WindowDays)) {
+                $windowCount -= [int]$events[$left].Count
+                $left++
+            }
+            if ($windowCount -gt $maxWindowCount) { $maxWindowCount = $windowCount }
+        }
+
+        if ($maxWindowCount -ge $Threshold) {
+            $result.Add([PSCustomObject]@{ IP = $group.Name; Count = $maxWindowCount }) | Out-Null
+        }
+    }
+
+    return @($result | Sort-Object -Property @{ Expression = { $_.Count }; Descending = $true }, IP)
+}
+
 function Get-MailboxIdentityKey {
     param([object]$Row)
 
@@ -1031,7 +1071,7 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
         }
 
         if (Test-DeleteOrDisableOperation -Operation $op -TableName $table) {
-            $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除 / Disable 操作')) | Out-Null
+            $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
         }
 
         if ($table -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs') -and $success -eq 'true' -and $isUsablePublicIp -and -not $isTrustedIp) {
@@ -1047,20 +1087,11 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
         }
 
         if ($table -eq 'SigninLogs' -and $isUsablePublicIp -and -not $isTrustedIp) {
-            $workload = Get-WorkloadValue -Row $row -TableName $table
-            $identity = Format-UserForReport -User (Get-UserValue -Row $row -TableName $table)
-            $appName = Get-SigninAppName -Row $row
-            if ([string]::IsNullOrWhiteSpace($appName)) { $appName = Get-OperationValue -Row $row -TableName $table }
             $suspiciousIpRecords.Add([PSCustomObject]@{
                 IP = $ip
-                Identity = $identity
-                AppDisplayName = $appName
                 Count = $rowEventCount
-                Reason = "公共 IP，来源表/工作负载：$table / $workload"
+                TimeValue = Get-RowTimeValue -Row $row
             }) | Out-Null
-            if (-not $suspiciousIpReasons.ContainsKey($ip)) {
-                $suspiciousIpReasons[$ip] = "公共 IP，来源表/工作负载：$table / $workload"
-            }
         }
 
         if ($table -eq 'DCRLogErrors') {
@@ -1251,22 +1282,7 @@ foreach ($row in $mailboxRows) {
     }
 }
 
-$suspiciousIpRows = @(
-    @($suspiciousIpRecords |
-        Where-Object { -not (Test-CachedTrustedIp -IP $_.IP -Rules $trustedRules) } |
-        Group-Object -Property IP, Identity) |
-        ForEach-Object {
-            $items = @($_.Group)
-            [PSCustomObject]@{
-                IP = $items[0].IP
-                Identity = $items[0].Identity
-                AppDisplayName = (($items | ForEach-Object { $_.AppDisplayName } | Where-Object { $_ } | Sort-Object -Unique) -join ', ')
-                Count = ($items | ForEach-Object { [int]$_.Count } | Measure-Object -Sum).Sum
-                Reason = (($items | ForEach-Object { $_.Reason } | Where-Object { $_ } | Sort-Object -Unique) -join '；')
-            }
-        } |
-        Sort-Object IP, Identity
-)
+$suspiciousIpRows = Get-SuspiciousIpSlidingWindowRows -Rows @($suspiciousIpRecords | Where-Object { -not (Test-CachedTrustedIp -IP $_.IP -Rules $trustedRules) }) -WindowDays 3 -Threshold 10
 $suspiciousIpSet = @{}
 foreach ($row in $suspiciousIpRows) { $suspiciousIpSet[$row.IP] = 1 }
 $topClientIps = @(
@@ -1348,13 +1364,12 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 $suspiciousIpKql = @"
 SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend Identity = tostring(coalesce(column_ifexists("Identity", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserDisplayName", ""), column_ifexists("UserId", "")))
-| extend AppDisplayName = tostring(column_ifexists("AppDisplayName", ""))
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
-| summarize LastTime=max(TimeGenerated), EventCount=count(), AppDisplayName=make_set(AppDisplayName, 20) by IPAddress=__ip, Identity
-| sort by IPAddress asc, Identity asc
+| project TimeGenerated, IPAddress=__ip
+
+报告端滑动窗口逻辑：同一 IP 在任意连续 3 天窗口内出现次数 >= 10 时，视为可疑 IP；仅显示 IP 和该窗口内最大次数。
 "@
 $clientIpRankLogic = @'
 处理逻辑：
@@ -1384,39 +1399,9 @@ $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml 
 $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作') -CellBuilder {
     param($r) @($r.Time, $r.Table, $r.User, $r.Operation)
 })
-# 可疑 IP 按 IP 分组，每个 IP 默认折叠，点击展开显示全部用户身份行
-$suspiciousIpByIp = @{}
-foreach ($row in $suspiciousIpRows) {
-    if (-not $suspiciousIpByIp.ContainsKey($row.IP)) {
-        $suspiciousIpByIp[$row.IP] = [System.Collections.Generic.List[object]]::new()
-    }
-    $suspiciousIpByIp[$row.IP].Add($row) | Out-Null
-}
-
-$suspiciousIpHtmlParts = [System.Collections.Generic.List[string]]::new()
-$suspiciousIpHtmlParts.Add((New-CodeBlockHtml -Text $suspiciousIpKql))
-
-foreach ($ip in ($suspiciousIpByIp.Keys | Sort-Object)) {
-    $ipRows = $suspiciousIpByIp[$ip]
-    $totalCount = ($ipRows | ForEach-Object { [int]$_.Count } | Measure-Object -Sum).Sum
-    $identities = ($ipRows | ForEach-Object { $_.Identity } | Sort-Object -Unique) -join ', '
-    $reasons = ($ipRows | ForEach-Object { $_.Reason } | Where-Object { $_ } | Sort-Object -Unique) -join '；'
-    
-    $ipId = 'suspicious-ip-' + ($ip -replace '[^a-zA-Z0-9]', '-')
-    $ipHtml = @"
-<details class="ip-group">
-<summary class="ip-summary"><span class="ip-address">$(Escape-Html $ip)</span><span class="ip-count">$totalCount 次</span><span class="ip-identities">$(Escape-Html $identities)</span></summary>
-<div class="ip-details">
-<p class="note">原因: $(Escape-Html $reasons)</p>
-<div class="table-scroll"><table><thead><tr><th>用户身份</th><th>应用名称</th><th>次数</th></tr></thead><tbody>
-"@
-    foreach ($row in ($ipRows | Sort-Object -Property Count -Descending)) {
-        $ipHtml += "<tr><td>$(Escape-Html $row.Identity)</td><td>$(Escape-Html $row.AppDisplayName)</td><td>$($row.Count)</td></tr>"
-    }
-    $ipHtml += "</tbody></table></div></div></details>"
-    $suspiciousIpHtmlParts.Add($ipHtml)
-}
-$suspiciousIpHtml = $suspiciousIpHtmlParts -join "`r`n"
+$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '次数') -CellBuilder {
+    param($r) @($r.IP, $r.Count)
+})
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
@@ -1503,12 +1488,12 @@ $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows (
 
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足容量5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true },
     [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true },
     [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true }
 )
@@ -1693,8 +1678,8 @@ const i18n = {
     'category.mailbox': '邮箱安全',
     'category.data-source': '数据源与许可证',
     'section.failed-signins.title': '应用登录失败',
-    'section.identity-permission.title': 'Service Principal 对象 / 权限成功变动',
-    'section.delete-disable.title': '删除 / Disable 操作',
+    'section.identity-permission.title': '应用权限变更',
+    'section.delete-disable.title': '删除操作',
     'section.suspicious-success.title': '可疑成功登录',
     'section.suspicious-ip.title': '可疑 IP',
     'section.license.title': 'License 使用量与剩余数量',
