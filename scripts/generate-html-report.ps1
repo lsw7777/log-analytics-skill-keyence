@@ -1070,7 +1070,8 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
             }
         }
 
-        if (Test-DeleteOrDisableOperation -Operation $op -TableName $table) {
+        $aadOperationType = Get-AnyFieldValue -Row $row -Names @('AADOperationType') -Default ''
+        if ($table -eq 'AuditLogs' -and $aadOperationType -eq 'Delete') {
             $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
         }
 
@@ -1338,15 +1339,9 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __FailureReasonRaw, __status, __isSuccess, __resultCode, __isFailed
 "@
 $deleteDisableKql = @"
-union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
+AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend Actor = tostring(coalesce(column_ifexists("Actor", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("UserUPN", ""), ""))
-| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("Activity", ""), column_ifexists("Operation", ""), ""))
-| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("Status", ""), column_ifexists("ResultStatus", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("ResultReason", ""), ""))
-| extend OperationText = OperationName
-| where tolower(OperationText) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| project-away OperationText
+| where AADOperationType == "Delete"
 "@
 $suspiciousSuccessKql = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
