@@ -999,10 +999,14 @@ AuditLogs
 | extend ActivityDisplayNameRaw = tostring(ActivityDisplayName)
 | extend OperationName = iff(isnotempty(OperationNameRaw) and OperationNameRaw != "", OperationNameRaw, "Unknown Operation")
 | extend ActivityDisplayName = iff(isnotempty(ActivityDisplayNameRaw) and ActivityDisplayNameRaw != "", ActivityDisplayNameRaw, OperationName)
+| extend Result = tostring(column_ifexists("Result", ""))
+| extend ResultReason = tostring(column_ifexists("ResultReason", ""))
+| extend TargetResources = tostring(column_ifexists("TargetResources", ""))
+| extend ModifiedProperties = tostring(column_ifexists("ModifiedProperties", ""))
 | where isnotempty(OperationName) and OperationName != "" and OperationName != "Unknown"
 | extend __RecordKind = "AggregatedAuditLogEvent"
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
-| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, __RecordKind
 "@
 }
 

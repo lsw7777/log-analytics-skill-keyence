@@ -340,6 +340,7 @@ foreach ($table in $targetTables) {
         'DCRLogErrors',
         'IntuneAuditLogsDCR_CL',
         'MailboxStatisticsDCR_CL',
+        'AuditLogs',
         'AADManagedIdentitySignInLogs',
         'AADServicePrincipalSignInLogs',
         'SigninLogs'
@@ -354,6 +355,9 @@ foreach ($table in $targetTables) {
     }
     if ($table -eq 'IntuneAuditLogsDCR_CL') {
         Write-Host '  Cache skipped: IntuneAuditLogsDCR_CL uses current audit-record KQL.' -ForegroundColor Yellow
+    }
+    if ($table -eq 'AuditLogs') {
+        Write-Host '  Cache skipped: AuditLogs uses current success-result KQL fields.' -ForegroundColor Yellow
     }
     if ($table -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs')) {
         Write-Host '  Cache skipped: sign-in risk depends on current trusted IP rules.' -ForegroundColor Yellow

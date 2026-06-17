@@ -153,7 +153,7 @@ function New-EventRecord {
             }
         }
         else {
-            $detailFields = @('PermissionName')
+            $detailFields = @('ResultReason', 'ResultDescription', 'TargetResources', 'Result')
         }
     }
 
@@ -986,6 +986,11 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
 
     foreach ($row in $dataset.Rows) {
         if ($table -eq 'AuditLogs') {
+            $auditResult = Get-AnyFieldValue -Row $row -Names @('Result') -Default ''
+            if ($auditResult.ToLowerInvariant() -eq 'success') {
+                $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason 'AuditLogs Result=success')) | Out-Null
+            }
+
             if (-not (Test-AuditLogUserActor -Row $row)) { continue }
             if (Test-PimAuditNoise -Row $row) { continue }
         }
@@ -1068,9 +1073,6 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
             $intuneAuditRows.Add((New-EventRecord -Table $table -Row $row -Reason 'Intune 审计风险')) | Out-Null
         }
 
-        if ($table -eq 'AuditLogs' -and $recordKind -eq 'AggregatedServicePrincipalAudit') {
-            $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason 'Service Principal 对象 / 权限成功变动')) | Out-Null
-        }
     }
 }
 
@@ -1385,8 +1387,7 @@ $sourceStatusLogic = @'
 $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend __isSuccess = tolower(tostring(Result)) == "success"
-| summarize ActivityDateTime=max(todatetime(ActivityDateTime)), EventCount=count() by Actor, OperationName, Target, PermissionName
+| where tostring(Result) =~ "success"
 "@
 
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
@@ -1492,8 +1493,7 @@ $dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualSta
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) @($r.Time, $r.Target, $r.Operation, $r.Detail)
 })
-$permissionGrouped = Group-EventRecords -Rows $identityPermissionChanges -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($permissionGrouped | Select-Object -First 80) -Columns @('活动时间', '操作者', '操作', '目标', '权限') -CellBuilder {
+$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('活动时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) 
     $permValue = $r.Detail
     
@@ -1524,7 +1524,7 @@ $sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtm
 
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = 'AAD / Managed Identity / Service Principal 登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '仅显示用户操作者触发的 Add/Remove/Hard delete service principal，以及 Add/Remove app role assignment to service principal；PIM 相关记录已排除。'; Content = $permissionHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
     [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
