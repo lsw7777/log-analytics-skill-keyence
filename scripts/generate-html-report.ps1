@@ -354,6 +354,34 @@ function Get-ShortListText {
     return (($items | Select-Object -First $MaxItems) -join ', ') + " ... +$($items.Count - $MaxItems)"
 }
 
+function Format-CompactTargetForReport {
+    param([string]$Target)
+
+    if ([string]::IsNullOrWhiteSpace($Target)) { return '' }
+    $text = $Target.Trim()
+    $values = [System.Collections.Generic.List[string]]::new()
+
+    try {
+        $jsonItems = @($text | ConvertFrom-Json -ErrorAction Stop)
+        foreach ($item in $jsonItems) {
+            $name = Get-AnyFieldValue -Row $item -Names @('displayName', 'userPrincipalName', 'appDisplayName', 'appId', 'id', 'type') -Default ''
+            if ($name) { $values.Add($name) | Out-Null }
+        }
+    } catch {
+        foreach ($fieldName in @('displayName', 'userPrincipalName', 'appDisplayName', 'appId', 'id')) {
+            foreach ($match in [regex]::Matches($text, '"' + $fieldName + '"\s*:\s*"([^"]+)"')) {
+                if ($match.Groups[1].Value) { $values.Add($match.Groups[1].Value) | Out-Null }
+            }
+        }
+    }
+
+    if ($values.Count -gt 0) {
+        return Get-ShortListText -Values @($values.ToArray()) -MaxItems 2
+    }
+    if ($text.Length -le 50) { return $text }
+    return $text.Substring(0, 50) + '...'
+}
+
 function Group-EventRecords {
     param(
         [object[]]$Rows,
@@ -1473,7 +1501,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
         }
     }
     
-    @($r.ActivityDateTime, $r.User, $r.Operation, $r.Target, $permValue)
+    @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTargetForReport -Target $r.Target), $permValue)
 })
 $intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
