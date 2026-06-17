@@ -1467,6 +1467,29 @@ $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | where tostring(Result) =~ "success"
+| where OperationName in (
+    "Add app role assignment to service principal",
+    "Add app role assignment to user",
+    "Add app role assignment to group",
+    "Add delegated permission grant",
+    "Add application",
+    "Update application",
+    "Consent to application",
+    "Add owner to application",
+    "Remove app role assignment from service principal",
+    "Remove delegated permission grant",
+    "Add service principal",
+    "Update service principal",
+    "Delete application",
+    "Delete service principal"
+)
+| project TimeGenerated, 
+    OperationName, 
+    Actor = tostring(InitiatedBy.User.UserPrincipalName),
+    Target = tostring(TargetResources),
+    Result,
+    CorrelationId
+| order by TimeGenerated desc
 "@
 
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }

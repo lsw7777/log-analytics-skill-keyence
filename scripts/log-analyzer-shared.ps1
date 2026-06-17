@@ -1108,36 +1108,19 @@ function New-MailboxStatisticsOptimizedQuery {
     # 返回所有邮箱统计数据，不在查询端过滤，由报告端进行风险分析
     return @"
 MailboxStatisticsDCR_CL
-| where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend MailboxOwnerUPN = tostring(column_ifexists("MailboxOwnerUPN", "")), MailboxOwnerUPN_s = tostring(column_ifexists("MailboxOwnerUPN_s", ""))
-| extend MailboxOwnerUPN = iff(isnotempty(MailboxOwnerUPN), MailboxOwnerUPN, MailboxOwnerUPN_s)
-| extend PrimarySmtpAddress = tostring(column_ifexists("PrimarySmtpAddress", "")), PrimarySmtpAddress_s = tostring(column_ifexists("PrimarySmtpAddress_s", ""))
-| extend PrimarySmtpAddress = iff(isnotempty(PrimarySmtpAddress), PrimarySmtpAddress, PrimarySmtpAddress_s)
-| extend DisplayName = tostring(column_ifexists("DisplayName", "")), DisplayName_s = tostring(column_ifexists("DisplayName_s", "")), Name = tostring(column_ifexists("Name", "")), Name_s = tostring(column_ifexists("Name_s", ""))
-| extend DisplayName = case(isnotempty(DisplayName), DisplayName, isnotempty(DisplayName_s), DisplayName_s, isnotempty(Name), Name, Name_s)
-| extend EmailAddress = tostring(column_ifexists("EmailAddress", "")), EmailAddress_s = tostring(column_ifexists("EmailAddress_s", "")), Mail = tostring(column_ifexists("Mail", "")), Mail_s = tostring(column_ifexists("Mail_s", "")), WindowsEmailAddress = tostring(column_ifexists("WindowsEmailAddress", "")), WindowsEmailAddress_s = tostring(column_ifexists("WindowsEmailAddress_s", "")), ExternalEmailAddress = tostring(column_ifexists("ExternalEmailAddress", "")), ExternalEmailAddress_s = tostring(column_ifexists("ExternalEmailAddress_s", ""))
-| extend EmailAddress = case(isnotempty(EmailAddress), EmailAddress, isnotempty(EmailAddress_s), EmailAddress_s, isnotempty(PrimarySmtpAddress), PrimarySmtpAddress, isnotempty(PrimarySmtpAddress_s), PrimarySmtpAddress_s, isnotempty(Mail), Mail, isnotempty(Mail_s), Mail_s, isnotempty(WindowsEmailAddress), WindowsEmailAddress, isnotempty(WindowsEmailAddress_s), WindowsEmailAddress_s, isnotempty(ExternalEmailAddress), ExternalEmailAddress, ExternalEmailAddress_s)
-| extend UserPrincipalName = tostring(column_ifexists("UserPrincipalName", "")), UserPrincipalName_s = tostring(column_ifexists("UserPrincipalName_s", "")), UPN = tostring(column_ifexists("UPN", "")), UPN_s = tostring(column_ifexists("UPN_s", ""))
-| extend UserPrincipalName = case(isnotempty(UserPrincipalName), UserPrincipalName, isnotempty(UserPrincipalName_s), UserPrincipalName_s, isnotempty(UPN), UPN, UPN_s)
-| extend UserPrincipalName = iff(isnotempty(UserPrincipalName), UserPrincipalName, iff(isnotempty(MailboxOwnerUPN), MailboxOwnerUPN, iff(isnotempty(PrimarySmtpAddress), PrimarySmtpAddress, iff(isnotempty(EmailAddress), EmailAddress, iff(isnotempty(DisplayName), DisplayName, "Unknown")))))
-| extend RecipientTypeDetails = case(isnotempty(tostring(column_ifexists("RecipientTypeDetails", ""))), tostring(column_ifexists("RecipientTypeDetails", "")), isnotempty(tostring(column_ifexists("RecipientTypeDetails_s", ""))), tostring(column_ifexists("RecipientTypeDetails_s", "")), isnotempty(tostring(column_ifexists("RecipientTypeDetail", ""))), tostring(column_ifexists("RecipientTypeDetail", "")), tostring(column_ifexists("RecipientTypeDetail_s", "")))
-| extend MailboxType = case(isnotempty(tostring(column_ifexists("MailboxType", ""))), tostring(column_ifexists("MailboxType", "")), isnotempty(tostring(column_ifexists("MailboxType_s", ""))), tostring(column_ifexists("MailboxType_s", "")), isnotempty(tostring(column_ifexists("MailboxRecipientType", ""))), tostring(column_ifexists("MailboxRecipientType", "")), tostring(column_ifexists("MailboxRecipientType_s", "")))
-| extend RecipientType = iff(isnotempty(tostring(column_ifexists("RecipientType", ""))), tostring(column_ifexists("RecipientType", "")), tostring(column_ifexists("RecipientType_s", "")))
-| extend __sharedFlagText = strcat(" ", tostring(column_ifexists("IsSharedMailbox", "")), " ", tostring(column_ifexists("IsSharedMailbox_s", "")), " ", tostring(column_ifexists("IsSharedMailBox", "")), " ", tostring(column_ifexists("IsSharedMailBox_s", "")), " ", tostring(column_ifexists("IsShared", "")), " ", tostring(column_ifexists("IsShared_s", "")), " ", tostring(column_ifexists("SharedMailbox", "")), " ", tostring(column_ifexists("SharedMailbox_s", "")), " ", tostring(column_ifexists("SharedMailBox", "")), " ", tostring(column_ifexists("SharedMailBox_s", "")))
-| extend __mailboxTypeText = strcat(" ", RecipientTypeDetails, " ", MailboxType, " ", RecipientType, " ", __sharedFlagText)
-| extend __sharedFlagLower = tolower(__sharedFlagText)
-| extend __isSharedMailbox = tolower(__mailboxTypeText) contains "shared" or __sharedFlagLower has_any ("true", "1", "yes", "y")
-| extend IsSharedMailbox = tostring(__isSharedMailbox)
-| extend __availableText = strcat(" ", tostring(column_ifexists("AvailableSpaceGB", "")), " ", tostring(column_ifexists("AvailableSpaceGB_d", "")), " ", tostring(column_ifexists("AvailableSpaceGB_r", "")), " ", tostring(column_ifexists("AvailableSpaceGB_s", "")), " ", tostring(column_ifexists("AvailableSpaceInGB", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_d", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_r", "")), " ", tostring(column_ifexists("AvailableSpaceInGB_s", "")), " ", tostring(column_ifexists("AvailableSpace", "")), " ", tostring(column_ifexists("AvailableSpace_d", "")), " ", tostring(column_ifexists("AvailableSpace_r", "")), " ", tostring(column_ifexists("AvailableSpace_s", "")))
-| extend __quotaText = strcat(" ", tostring(column_ifexists("QuotaLimitGB", "")), " ", tostring(column_ifexists("QuotaLimitGB_d", "")), " ", tostring(column_ifexists("QuotaLimitGB_r", "")), " ", tostring(column_ifexists("QuotaLimitGB_s", "")), " ", tostring(column_ifexists("QuotaGB", "")), " ", tostring(column_ifexists("QuotaGB_d", "")), " ", tostring(column_ifexists("QuotaGB_r", "")), " ", tostring(column_ifexists("QuotaGB_s", "")), " ", tostring(column_ifexists("StorageQuotaGB", "")), " ", tostring(column_ifexists("StorageQuotaGB_d", "")), " ", tostring(column_ifexists("StorageQuotaGB_r", "")), " ", tostring(column_ifexists("StorageQuotaGB_s", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_d", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_r", "")), " ", tostring(column_ifexists("ProhibitSendReceiveQuotaGB_s", "")))
-| extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __availableText))
-| extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, __quotaText))
-| extend UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
-| extend TotalItemSizeGB = tostring(column_ifexists("TotalItemSizeGB", ""))
-| summarize arg_max(TimeGenerated, *) by UserPrincipalName
-| where __isSharedMailbox or (QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05)
-| extend FirstTime=TimeGenerated, LastTime=TimeGenerated, EventCount=1, __RecordKind="LatestMailboxSnapshot"
-| project TimeGenerated, FirstTime, LastTime, EventCount, DisplayName, UserPrincipalName, MailboxOwnerUPN, PrimarySmtpAddress, EmailAddress, RecipientTypeDetails, MailboxType, RecipientType, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent, TotalItemSizeGB, __RecordKind
+| where TimeGenerated >= datetime(2026-06-07T06:00:00.0000000Z) and TimeGenerated < datetime(2026-06-17T06:00:00.0000000Z)
+| extend RecipientTypeDetails = tostring(column_ifexists("RecipientTypeDetails", ""))
+| extend AvailableSpaceGB = todouble(column_ifexists("AvailableSpaceGB", real(null)))
+| extend QuotaLimitGB = todouble(column_ifexists("QuotaLimitGB", real(null)))
+| where RecipientTypeDetails contains "SharedMailbox"
+    or (isnotnull(QuotaLimitGB) and QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05)
+| summarize arg_max(TimeGenerated, *) by RecipientTypeDetails
+| project TimeGenerated, 
+    RecipientTypeDetails, 
+    AvailableSpaceGB, 
+    QuotaLimitGB, 
+    UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
+| order by TimeGenerated desc
 "@
 }
 
