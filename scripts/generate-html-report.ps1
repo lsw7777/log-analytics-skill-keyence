@@ -1581,7 +1581,7 @@ $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows (
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
     [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
