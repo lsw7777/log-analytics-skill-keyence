@@ -992,9 +992,10 @@ AuditLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
 | extend __actorUpn = tostring(InitiatedBy.user.userPrincipalName)
 | extend __actorName = tostring(InitiatedBy.user.displayName)
-| extend Actor = iff(isnotempty(__actorName) and isnotempty(__actorUpn), strcat(__actorName, " / ", __actorUpn), iff(isnotempty(__actorUpn), __actorUpn, ""))
+| extend __appName = tostring(InitiatedBy.app.displayName)
+| extend __appId = tostring(InitiatedBy.app.appId)
+| extend Actor = case(isnotempty(__actorName) and isnotempty(__actorUpn), strcat(__actorName, " / ", __actorUpn), isnotempty(__actorUpn), __actorUpn, isnotempty(__appName) and isnotempty(__appId), strcat(__appName, " / ", __appId), isnotempty(__appName), __appName, isnotempty(__appId), __appId, "Unknown")
 | extend UserPrincipalName = Actor
-| where isnotempty(__actorUpn)
 | extend OperationNameRaw = tostring(OperationName)
 | extend ActivityDisplayNameRaw = tostring(ActivityDisplayName)
 | extend OperationName = iff(isnotempty(OperationNameRaw) and OperationNameRaw != "", OperationNameRaw, "Unknown Operation")
@@ -1003,10 +1004,11 @@ AuditLogs
 | extend ResultReason = tostring(column_ifexists("ResultReason", ""))
 | extend TargetResources = tostring(column_ifexists("TargetResources", ""))
 | extend ModifiedProperties = tostring(column_ifexists("ModifiedProperties", ""))
-| where isnotempty(OperationName) and OperationName != "" and OperationName != "Unknown"
+| extend AADOperationType = tostring(column_ifexists("AADOperationType", ""))
+| where AADOperationType == "Delete" or (isnotempty(__actorUpn) and isnotempty(OperationName) and OperationName != "" and OperationName != "Unknown")
 | extend __RecordKind = "AggregatedAuditLogEvent"
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, __RecordKind
-| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, AADOperationType, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, AADOperationType, __RecordKind
 "@
 }
 
