@@ -1082,18 +1082,8 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
 
     foreach ($row in $dataset.Rows) {
         if ($table -eq 'AuditLogs') {
-            $auditResult = Get-AnyFieldValue -Row $row -Names @('Result') -Default ''
-            if ($auditResult.ToLowerInvariant() -eq 'success') {
-                $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason 'AuditLogs Result=success')) | Out-Null
-            }
-
-            $aadOperationTypeForDelete = Get-AnyFieldValue -Row $row -Names @('AADOperationType') -Default ''
-            if ($aadOperationTypeForDelete -eq 'Delete') {
-                $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
-            }
-
-            if (-not (Test-AuditLogUserActor -Row $row)) { continue }
-            if (Test-PimAuditNoise -Row $row) { continue }
+            $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason '权限变更审计')) | Out-Null
+            continue
         }
 
         $rowEventCount = Get-RowEventCount -Row $row
@@ -1463,11 +1453,7 @@ $licenseLogic = @"
 AssignedLicensesDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 "@
-$permissionKql = @"
-AuditLogs
-| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| where tostring(Result) =~ "success"
-"@
+$permissionKql = New-RiskOptimizedLogTableQuery -TableName 'AuditLogs' -StartUtc $actualStartUtc -EndUtc $actualEndUtc
 
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {

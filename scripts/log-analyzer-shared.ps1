@@ -990,25 +990,30 @@ function New-AuditLogsOptimizedQuery {
     return @"
 AuditLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| extend __actorUpn = tostring(InitiatedBy.user.userPrincipalName)
-| extend __actorName = tostring(InitiatedBy.user.displayName)
-| extend __appName = tostring(InitiatedBy.app.displayName)
-| extend __appId = tostring(InitiatedBy.app.appId)
-| extend Actor = case(isnotempty(__actorName) and isnotempty(__actorUpn), strcat(__actorName, " / ", __actorUpn), isnotempty(__actorUpn), __actorUpn, isnotempty(__appName) and isnotempty(__appId), strcat(__appName, " / ", __appId), isnotempty(__appName), __appName, isnotempty(__appId), __appId, "Unknown")
-| extend UserPrincipalName = Actor
-| extend OperationNameRaw = tostring(OperationName)
-| extend ActivityDisplayNameRaw = tostring(ActivityDisplayName)
-| extend OperationName = iff(isnotempty(OperationNameRaw) and OperationNameRaw != "", OperationNameRaw, "Unknown Operation")
-| extend ActivityDisplayName = iff(isnotempty(ActivityDisplayNameRaw) and ActivityDisplayNameRaw != "", ActivityDisplayNameRaw, OperationName)
-| extend Result = tostring(column_ifexists("Result", ""))
-| extend ResultReason = tostring(column_ifexists("ResultReason", ""))
-| extend TargetResources = tostring(column_ifexists("TargetResources", ""))
-| extend ModifiedProperties = tostring(column_ifexists("ModifiedProperties", ""))
-| extend AADOperationType = tostring(column_ifexists("AADOperationType", ""))
-| where AADOperationType == "Delete" or (isnotempty(__actorUpn) and isnotempty(OperationName) and OperationName != "" and OperationName != "Unknown")
-| extend __RecordKind = "AggregatedAuditLogEvent"
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, AADOperationType, __RecordKind
-| project TimeGenerated, FirstTime, LastTime, EventCount, Actor, UserPrincipalName, OperationName, ActivityDisplayName, Result, ResultReason, TargetResources, ModifiedProperties, AADOperationType, __RecordKind
+| where tostring(Result) =~ "success"
+| where OperationName in (
+    "Add app role assignment to service principal",
+    "Add app role assignment to user",
+    "Add app role assignment to group",
+    "Add delegated permission grant",
+    "Add application",
+    "Update application",
+    "Consent to application",
+    "Add owner to application",
+    "Remove app role assignment from service principal",
+    "Remove delegated permission grant",
+    "Add service principal",
+    "Update service principal",
+    "Delete application",
+    "Delete service principal"
+)
+| project TimeGenerated, 
+    OperationName, 
+    Actor = tostring(InitiatedBy.user.userPrincipalName),
+    Target = tostring(TargetResources),
+    Result,
+    CorrelationId
+| order by TimeGenerated desc
 "@
 }
 
