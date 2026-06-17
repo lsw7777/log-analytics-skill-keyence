@@ -1010,8 +1010,15 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
         if ($success -eq 'false') {
             $record = New-EventRecord -Table $table -Row $row -Reason '失败/异常'
             if ($table -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs')) {
-                if ($table -ne 'AADServicePrincipalSignInLogs' -or $rowEventCount -gt 10) {
-                    $failedSignins.Add($record) | Out-Null
+                # 过滤掉主体/应用摘要中含有 keyence.com.cn 的行
+                $userLower = if ($record.User) { $record.User.ToLower() } else { '' }
+                $opLower = if ($record.Operation) { $record.Operation.ToLower() } else { '' }
+                $detailLower = if ($record.Detail) { $record.Detail.ToLower() } else { '' }
+                $containsKeyence = ($userLower -match 'keyence\.com\.cn') -or ($opLower -match 'keyence\.com\.cn') -or ($detailLower -match 'keyence\.com\.cn')
+                if (-not $containsKeyence) {
+                    if ($table -ne 'AADServicePrincipalSignInLogs' -or $rowEventCount -gt 10) {
+                        $failedSignins.Add($record) | Out-Null
+                    }
                 }
             } elseif ($table -in @('DCRLogErrors', 'IntuneAuditLogsDCR_CL')) {
                 # These tables have dedicated sections below.
@@ -1378,14 +1385,8 @@ $sourceStatusLogic = @'
 $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend __actorUpn = tostring(column_ifexists("InitiatedBy", dynamic({})).user.userPrincipalName)
-| extend Actor = iff(isnotempty(__actorUpn), __actorUpn, tostring(column_ifexists("Actor", "")))
-| extend Target = tostring(column_ifexists("TargetResources", ""))
-| extend PermissionName = tostring(column_ifexists("Category", ""))
-| where isnotempty(__actorUpn)
-| where not(OperationName has "PIM" or ActivityDisplayName has "PIM" or ResultReason has "PIM activation expired")
-| extend __isSuccess = tolower(tostring(Result)) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
-| where __isSuccess and OperationName in~ (
+| extend __isSuccess = tolower(tostring(Result)) == "success"
+| where OperationName in~ (
     "Add service principal",
     "Remove service principal",
     "Hard delete service principal",
@@ -1407,9 +1408,39 @@ $failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Row
 $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作') -CellBuilder {
     param($r) @($r.Time, $r.Table, $r.User, $r.Operation)
 })
-$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '用户身份', '应用名称', '次数', '原因') -CellBuilder {
-    param($r) @($r.IP, $r.Identity, $r.AppDisplayName, $r.Count, $r.Reason)
-})
+# 可疑 IP 按 IP 分组，每个 IP 默认折叠，点击展开显示全部用户身份行
+$suspiciousIpByIp = @{}
+foreach ($row in $suspiciousIpRows) {
+    if (-not $suspiciousIpByIp.ContainsKey($row.IP)) {
+        $suspiciousIpByIp[$row.IP] = [System.Collections.Generic.List[object]]::new()
+    }
+    $suspiciousIpByIp[$row.IP].Add($row) | Out-Null
+}
+
+$suspiciousIpHtmlParts = [System.Collections.Generic.List[string]]::new()
+$suspiciousIpHtmlParts.Add((New-CodeBlockHtml -Text $suspiciousIpKql))
+
+foreach ($ip in ($suspiciousIpByIp.Keys | Sort-Object)) {
+    $ipRows = $suspiciousIpByIp[$ip]
+    $totalCount = ($ipRows | ForEach-Object { [int]$_.Count } | Measure-Object -Sum).Sum
+    $identities = ($ipRows | ForEach-Object { $_.Identity } | Sort-Object -Unique) -join ', '
+    $reasons = ($ipRows | ForEach-Object { $_.Reason } | Where-Object { $_ } | Sort-Object -Unique) -join '；'
+    
+    $ipId = 'suspicious-ip-' + ($ip -replace '[^a-zA-Z0-9]', '-')
+    $ipHtml = @"
+<details class="ip-group">
+<summary class="ip-summary"><span class="ip-address">$(Escape-Html $ip)</span><span class="ip-count">$totalCount 次</span><span class="ip-identities">$(Escape-Html $identities)</span></summary>
+<div class="ip-details">
+<p class="note">原因: $(Escape-Html $reasons)</p>
+<div class="table-scroll"><table><thead><tr><th>用户身份</th><th>应用名称</th><th>次数</th></tr></thead><tbody>
+"@
+    foreach ($row in ($ipRows | Sort-Object -Property Count -Descending)) {
+        $ipHtml += "<tr><td>$(Escape-Html $row.Identity)</td><td>$(Escape-Html $row.AppDisplayName)</td><td>$($row.Count)</td></tr>"
+    }
+    $ipHtml += "</tbody></table></div></div></details>"
+    $suspiciousIpHtmlParts.Add($ipHtml)
+}
+$suspiciousIpHtml = $suspiciousIpHtmlParts -join "`r`n"
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
@@ -1625,6 +1656,16 @@ td { color: #e7edf5; }
 .kql-block summary::before { content: "▸"; display: inline-block; margin-right: 6px; transition: transform 0.2s; }
 .kql-block[open] summary::before { transform: rotate(90deg); }
 .kql-block code { display: block; padding: 10px 14px; background: #0d1320; border-radius: 4px; font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; overflow-x: auto; }
+.ip-group { margin: 10px 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; }
+.ip-group summary { cursor: pointer; list-style: none; padding: 10px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ip-group summary::-webkit-details-marker { display: none; }
+.ip-group summary::before { content: "▸"; color: var(--blue); transition: transform 0.2s; }
+.ip-group[open] summary::before { transform: rotate(90deg); }
+.ip-address { font-weight: 600; color: var(--text); font-family: Consolas, monospace; }
+.ip-count { background: var(--red); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+.ip-identities { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
+.ip-details { padding: 0 14px 14px; }
+.ip-details .note { margin: 8px 0; }
 @media (max-width: 980px) {
   .layout { display: block; padding: 18px; }
   .side-nav { position: static; max-height: none; margin-bottom: 18px; }
