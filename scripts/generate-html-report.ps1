@@ -1082,7 +1082,12 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
 
     foreach ($row in $dataset.Rows) {
         if ($table -eq 'AuditLogs') {
-            $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason '权限变更审计')) | Out-Null
+            $recordKind = Get-AnyFieldValue -Row $row -Names @('__RecordKind') -Default ''
+            if ($recordKind -eq 'DeleteOperation') {
+                $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
+            } else {
+                $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason '权限变更审计')) | Out-Null
+            }
             continue
         }
 

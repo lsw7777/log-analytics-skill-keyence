@@ -990,8 +990,7 @@ function New-AuditLogsOptimizedQuery {
     return @"
 AuditLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
-| where tostring(Result) =~ "success"
-| where OperationName in (
+| extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
     "Add app role assignment to service principal",
     "Add app role assignment to user",
     "Add app role assignment to group",
@@ -1007,12 +1006,17 @@ AuditLogs
     "Delete application",
     "Delete service principal"
 )
+| extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
+| where __isPermissionChange or __isDeleteOperation
+| extend __RecordKind = case(__isPermissionChange, "IdentityPermissionChange", __isDeleteOperation, "DeleteOperation", "AuditLogEvent")
 | project TimeGenerated, 
     OperationName, 
+    AADOperationType,
     Actor = tostring(InitiatedBy.user.userPrincipalName),
     Target = tostring(TargetResources),
     Result,
-    CorrelationId
+    CorrelationId,
+    __RecordKind
 | order by TimeGenerated desc
 "@
 }
