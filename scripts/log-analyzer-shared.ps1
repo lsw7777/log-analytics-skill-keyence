@@ -1008,7 +1008,7 @@ AuditLogs
 )
 | extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
 | where __isPermissionChange or __isDeleteOperation
-| extend __RecordKind = case(__isPermissionChange, "IdentityPermissionChange", __isDeleteOperation, "DeleteOperation", "AuditLogEvent")
+| extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
 | project TimeGenerated, 
     OperationName, 
     AADOperationType,

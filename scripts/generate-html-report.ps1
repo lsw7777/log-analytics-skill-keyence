@@ -1380,23 +1380,52 @@ $actualEndUtc = if ($EndUtc) { $EndUtc } else { '2026-06-15T02:00:00Z' }
 $trustedIpKqlLiteral = Get-TrustedIpKqlDynamicLiteral
 
 $failedSigninKql = @"
-union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs
+union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
-| extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
-| extend __FailureReasonRaw = tostring(column_ifexists("FailureReason", ""))
-| extend ResultDescription = case(isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, isnotempty(__FailureReasonRaw), __FailureReasonRaw, isnotempty(__StatusRaw), __StatusRaw, "")
-| extend __status = tolower(ResultType)
-| extend __isSuccess = __status in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
-| extend __resultCode = tolong(ResultType)
-| extend __isFailed = (isnotempty(__status) and not(__isSuccess)) or __resultCode > 0 or tolower(ResultDescription) has_any ("fail","failed","failure","denied","error","timeout")
+| extend __principal = case(
+    TableName == "SigninLogs", tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("UserDisplayName", ""), column_ifexists("Identity", ""), "Unknown")),
+    tostring(coalesce(column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), column_ifexists("Identity", ""), column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalId", ""), column_ifexists("AppId", ""), "Unknown"))
+)
+| extend __operation = case(TableName == "SigninLogs", tostring(coalesce(column_ifexists("AppDisplayName", ""), "Unknown")), __principal)
+| extend __ip = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
+| extend __result = tostring(coalesce(column_ifexists("ResultSignature", ""), column_ifexists("Result", ""), column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ResultDescription", ""), ""))
+| extend __detail = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", ""), __result))
+| extend __status = tolower(__result)
+| extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
+| extend __isFailed = (isnotempty(__status) and not(__isSuccess) and __status != "unknown") or tolower(__detail) has_any ("fail","failed","failure","denied","error","timeout")
 | where __isFailed
-| project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __FailureReasonRaw, __status, __isSuccess, __resultCode, __isFailed
+| where not(strcat(__principal, " ", __operation, " ", __detail) has "keyence.com.cn")
+| summarize Count=count(), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated) by TableName, IP=__ip, User=__principal, Operation=__operation, Detail=__detail, Result=__result
+| where TableName != "AADServicePrincipalSignInLogs" or Count > 10
+| project Count, LastTime, IP, 主体_应用摘要=strcat(User, " / ", Operation), Detail, TableName, FirstTime, Result
+| sort by Count desc, LastTime desc
+| take 50
 "@
 $deleteDisableKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| where AADOperationType == "Delete"
+| extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
+    "Add app role assignment to service principal",
+    "Add app role assignment to user",
+    "Add app role assignment to group",
+    "Add delegated permission grant",
+    "Add application",
+    "Update application",
+    "Consent to application",
+    "Add owner to application",
+    "Remove app role assignment from service principal",
+    "Remove delegated permission grant",
+    "Add service principal",
+    "Update service principal",
+    "Delete application",
+    "Delete service principal"
+)
+| extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
+| where __isDeleteOperation
+| extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
+| project TimeGenerated, OperationName, AADOperationType, Actor=tostring(InitiatedBy.user.userPrincipalName), Target=tostring(TargetResources), Result, CorrelationId, __RecordKind
+| order by TimeGenerated desc
+| take 200
 "@
 $suspiciousSuccessKql = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
@@ -1462,8 +1491,7 @@ AssignedLicensesDCR_CL
 $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| where tostring(Result) =~ "success"
-| where OperationName in (
+| extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
     "Add app role assignment to service principal",
     "Add app role assignment to user",
     "Add app role assignment to group",
@@ -1479,12 +1507,17 @@ AuditLogs
     "Delete application",
     "Delete service principal"
 )
+| extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
+| where __isPermissionChange and not(__isDeleteOperation)
+| extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
 | project TimeGenerated, 
     OperationName, 
-    Actor = tostring(InitiatedBy.User.UserPrincipalName),
+    AADOperationType,
+    Actor = tostring(InitiatedBy.user.userPrincipalName),
     Target = tostring(TargetResources),
     Result,
-    CorrelationId
+    CorrelationId,
+    __RecordKind
 | order by TimeGenerated desc
 "@
 
