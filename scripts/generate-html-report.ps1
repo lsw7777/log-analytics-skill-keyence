@@ -971,14 +971,12 @@ $clientIpCounts = @{}
 $identityPermissionChanges = [System.Collections.Generic.List[object]]::new()
 $dcrLogErrorRows = [System.Collections.Generic.List[object]]::new()
 $intuneAuditRows = [System.Collections.Generic.List[object]]::new()
-$sourceStatusRows = [System.Collections.Generic.List[object]]::new()
 
 for ($i = 0; $i -lt $datasets.Count; $i++) {
     $dataset = $datasets[$i]
     $table = $dataset.Table
     $filteredCount = $dataset.Rows.Count
     $totalCount = if ($TotalCounts -and $i -lt $TotalCounts.Count) { $TotalCounts[$i] } else { $filteredCount }
-    $sourceStatusRows.Add([PSCustomObject]@{ Table = $table; TotalRecords = $totalCount; FilteredRecords = $filteredCount; Source = (Split-Path -Leaf $dataset.Path) }) | Out-Null
 
     if ($table -in @('AssignedLicensesDCR_CL', 'MailboxStatisticsDCR_CL')) {
         continue
@@ -1322,12 +1320,6 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | where __isFailed
 | summarize LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription
 "@
-$failedOpsLogic = @'
-处理逻辑：
-1. 各表查询端先筛选失败/异常、删除/Disable、消息追踪异常等风险记录。
-2. 报告端排除已经单独展示的登录失败、删除/Disable、DCRLogErrors、Intune 审计等栏目。
-3. 剩余失败/异常仅在操作者、操作内容、时间戳完全相同时合并，否则逐条展示。
-'@
 $deleteDisableKql = @"
 union withsource=TableName AuditLogs, IntuneAuditLogsDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
@@ -1378,12 +1370,6 @@ AssignedLicensesDCR_CL
 补充逻辑：
 当日志中的 TotalLicenses 缺失时，报告通过 Microsoft Graph subscribedSkus 获取总量/剩余量。
 "@
-$sourceStatusLogic = @'
-处理逻辑：
-1. main.ps1 按所选时间范围逐表调用 query-log-analytics.ps1 导出 CSV。
-2. 对 DCRLogErrors、MailboxStatisticsDCR_CL、IntuneAuditLogsDCR_CL 和登录相关表跳过表级缓存，确保使用当前查询逻辑。
-3. 本栏目只展示本次实际参与合并报告的 CSV 数据源、记录数和文件名。
-'@
 $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
@@ -1393,10 +1379,6 @@ AuditLogs
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
-})
-$failedOpsGrouped = Group-EventRecords -Rows $failedOperations -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$failedOpsHtml = (New-CodeBlockHtml -Text $failedOpsLogic) + (New-TableHtml -Rows ($failedOpsGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', '表', '用户', '操作', '状态/原因') -CellBuilder {
-    param($r) @($r.Count, $r.LastTime, $r.Table, $r.User, $r.Operation, $r.Detail)
 })
 # 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生时间
 $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作') -CellBuilder {
@@ -1518,30 +1500,25 @@ $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
 })
-$sourceStatusHtml = (New-CodeBlockHtml -Text $sourceStatusLogic) + (New-TableHtml -Rows $sourceStatusRows -Columns @('表', '总记录数', '筛选后记录数', 'CSV') -CellBuilder {
-    param($r) @($r.Table, $r.TotalRecords, $r.FilteredRecords, $r.Source)
-})
 
 $sectionSpecs = @(
-    [PSCustomObject]@{ Id = 'failed-signins'; Title = 'AAD / Managed Identity / Service Principal 登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
     [PSCustomObject]@{ Id = 'identity-permission'; Title = 'Service Principal 对象 / 权限成功变动'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
     [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除 / Disable 操作'; Note = '只统计 delete / remove / disable / deactivate 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
     [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，并合并邮箱容量风险；有风险的邮箱排在最前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足容量5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true },
     [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'failed-ops'; Title = '其他失败/异常操作'; Note = '登录失败和删除 / Disable 已单独列出，这里保留其他失败、异常记录；仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedOpsHtml; Open = $false },
-    [PSCustomObject]@{ Id = 'source-status'; Title = '数据源查询状态'; Note = '显示本次参与生成合并报告的 CSV 数据源。'; Content = $sourceStatusHtml; Open = $false }
+    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true }
 )
 
 # 定义二级分类目录结构
 $categoryOrder = @(
     [PSCustomObject]@{ Key = 'login-security'; Label = '登录与身份安全'; Icon = '🔐'; Sections = @('suspicious-success', 'suspicious-ip', 'failed-signins') },
-    [PSCustomObject]@{ Key = 'operation-audit'; Label = '操作审计'; Icon = '📋'; Sections = @('identity-permission', 'delete-disable', 'failed-ops') },
+    [PSCustomObject]@{ Key = 'operation-audit'; Label = '操作审计'; Icon = '📋'; Sections = @('identity-permission', 'delete-disable') },
     [PSCustomObject]@{ Key = 'mailbox'; Label = '邮箱安全'; Icon = '📧'; Sections = @('shared-mailbox') },
-    [PSCustomObject]@{ Key = 'data-source'; Label = '数据源与许可证'; Icon = '💾'; Sections = @('dcr-log-errors', 'intune-audit', 'license', 'source-status') }
+    [PSCustomObject]@{ Key = 'data-source'; Label = '数据源与许可证'; Icon = '💾'; Sections = @('dcr-log-errors', 'intune-audit', 'license') }
 )
 
 # 构建二级目录 HTML（使用 details/summary 实现一级分类折叠）
@@ -1576,16 +1553,16 @@ $html = @"
 <title>Log Analytics 合并风险报告</title>
 <style>
 :root {
-  --bg: #0f1720;
-  --panel: #151f2b;
-  --panel2: #1d2a38;
-  --text: #eef4fb;
-  --muted: #9fb0c2;
-  --line: #2d3d4f;
-  --red: #ff6b6b;
-  --amber: #f3b95f;
-  --green: #66d98f;
-  --blue: #6bb6ff;
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel2: #f5f7fb;
+  --text: #111827;
+  --muted: #4b5563;
+  --line: #d9e0ea;
+  --red: #b91c1c;
+  --amber: #b45309;
+  --green: #047857;
+  --blue: #1d4ed8;
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
@@ -1618,7 +1595,7 @@ body { margin: 0; background: var(--bg); color: var(--text); font-family: "Segoe
 .header-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 h1 { margin: 0 0 10px; font-size: 28px; font-weight: 700; }
 .language-switcher { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; color: var(--muted); font-size: 13px; }
-.language-switcher select { background: #111a24; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+.language-switcher select { background: #ffffff; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
 .meta { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); }
 .tag { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 13px; }
 .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 22px; }
@@ -1639,16 +1616,16 @@ h1 { margin: 0 0 10px; font-size: 28px; font-weight: 700; }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 760px; }
 th, td { border-bottom: 1px solid var(--line); padding: 9px 10px; text-align: left; vertical-align: top; font-size: 13px; }
-th { color: var(--muted); font-weight: 600; background: #111a24; position: sticky; top: 0; }
-td { color: #e7edf5; }
+th { color: var(--muted); font-weight: 600; background: #f3f4f6; position: sticky; top: 0; }
+td { color: var(--text); }
 .risk-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .small { font-size: 12px; color: var(--muted); }
-.kql-block { margin: 14px 18px 0; background: #111a24; border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; color: #dbeafe; font-size: 12px; line-height: 1.55; }
+.kql-block { margin: 14px 18px 0; background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; overflow-x: auto; color: var(--text); font-size: 12px; line-height: 1.55; }
 .kql-block summary { cursor: pointer; list-style: none; padding: 10px 14px; font-weight: 600; color: var(--blue); }
 .kql-block summary::-webkit-details-marker { display: none; }
 .kql-block summary::before { content: "▸"; display: inline-block; margin-right: 6px; transition: transform 0.2s; }
 .kql-block[open] summary::before { transform: rotate(90deg); }
-.kql-block code { display: block; padding: 10px 14px; background: #0d1320; border-radius: 4px; font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; overflow-x: auto; }
+.kql-block code { display: block; padding: 10px 14px; background: #ffffff; border-top: 1px solid var(--line); border-radius: 0 0 4px 4px; font-family: Consolas, "Cascadia Mono", monospace; white-space: pre; overflow-x: auto; }
 .ip-group { margin: 10px 0; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; }
 .ip-group summary { cursor: pointer; list-style: none; padding: 10px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ip-group summary::-webkit-details-marker { display: none; }
@@ -1684,7 +1661,6 @@ $sideNavHtml
 
   <div class="summary">
     <div class="card"><div class="label" data-i18n="summary.failedSignins">登录失败</div><div class="value red">$($riskCounts.FailedSignins)</div></div>
-    <div class="card"><div class="label" data-i18n="summary.failedOperations">失败/异常操作</div><div class="value red">$($riskCounts.FailedOperations)</div></div>
     <div class="card"><div class="label" data-i18n="summary.deleteDisable">删除 / Disable</div><div class="value amber">$($riskCounts.DeleteDisable)</div></div>
     <div class="card"><div class="label" data-i18n="summary.suspiciousIp">可疑 IP</div><div class="value amber">$($riskCounts.SuspiciousIPs)</div></div>
     <div class="card"><div class="label" data-i18n="summary.suspiciousSigninSuccess">可信位置外成功登录</div><div class="value amber">$($riskCounts.SuspiciousSigninSuccess)</div></div>
@@ -1716,7 +1692,7 @@ const i18n = {
     'category.operation-audit': '操作审计',
     'category.mailbox': '邮箱安全',
     'category.data-source': '数据源与许可证',
-    'section.failed-signins.title': 'AAD / Managed Identity / Service Principal 登录失败',
+    'section.failed-signins.title': '应用登录失败',
     'section.identity-permission.title': 'Service Principal 对象 / 权限成功变动',
     'section.delete-disable.title': '删除 / Disable 操作',
     'section.suspicious-success.title': '可疑成功登录',
@@ -1725,10 +1701,7 @@ const i18n = {
     'section.shared-mailbox.title': 'SharedMailbox',
     'section.dcr-log-errors.title': 'DCRLogErrors',
     'section.intune-audit.title': 'Intune 审计记录',
-    'section.failed-ops.title': '其他失败/异常操作',
-    'section.source-status.title': '数据源查询状态',
     'summary.failedSignins': '登录失败',
-    'summary.failedOperations': '失败/异常操作',
     'summary.deleteDisable': '删除 / Disable',
     'summary.suspiciousIp': '可疑 IP',
     'summary.suspiciousSigninSuccess': '可信位置外成功登录',
@@ -1768,10 +1741,7 @@ const i18n = {
     'section.shared-mailbox.title': 'Shared Mailboxes',
     'section.dcr-log-errors.title': 'DCR Log Errors',
     'section.intune-audit.title': 'Intune Audit Records',
-    'section.failed-ops.title': 'Other Failed / Abnormal Operations',
-    'section.source-status.title': 'Data Source Query Status',
     'summary.failedSignins': 'Sign-in Failures',
-    'summary.failedOperations': 'Failed / Abnormal Operations',
     'summary.deleteDisable': 'Delete / Disable',
     'summary.suspiciousIp': 'Suspicious IPs',
     'summary.suspiciousSigninSuccess': 'Successful Sign-ins Outside Trusted Locations',
@@ -1811,10 +1781,7 @@ const i18n = {
     'section.shared-mailbox.title': '共有メールボックス',
     'section.dcr-log-errors.title': 'DCR ログ エラー',
     'section.intune-audit.title': 'Intune 監査レコード',
-    'section.failed-ops.title': 'その他の失敗 / 異常操作',
-    'section.source-status.title': 'データソース クエリ状態',
     'summary.failedSignins': 'サインイン失敗',
-    'summary.failedOperations': '失敗 / 異常操作',
     'summary.deleteDisable': '削除 / 無効化',
     'summary.suspiciousIp': '疑わしい IP',
     'summary.suspiciousSigninSuccess': '信頼済み場所外の成功サインイン',
