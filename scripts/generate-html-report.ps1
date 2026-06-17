@@ -382,6 +382,18 @@ function Format-CompactTargetForReport {
     return $text.Substring(0, 50) + '...'
 }
 
+function Format-CompactTextForReport {
+    param(
+        [string]$Text,
+        [int]$MaxLength = 80
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) { return '' }
+    $compact = [regex]::Replace($Text.Trim(), '\s+', ' ')
+    if ($compact.Length -le $MaxLength) { return $compact }
+    return $compact.Substring(0, $MaxLength) + '...'
+}
+
 function Group-EventRecords {
     param(
         [object[]]$Rows,
@@ -1522,7 +1534,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
         }
     }
     
-    @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTargetForReport -Target $r.Target), $permValue)
+    @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTargetForReport -Target $r.Target), (Format-CompactTextForReport -Text $permValue -MaxLength 80))
 })
 $intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)"
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
