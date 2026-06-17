@@ -526,7 +526,8 @@ function Get-SigninAppName {
 function Test-AllowedSigninApp {
     param([string]$AppName)
     if ([string]::IsNullOrWhiteSpace($AppName)) { return $false }
-    return @('Windows Sign In', 'Microsoft Edge', 'Sangfor SASE VPN', 'Microsoft Office') -contains $AppName.Trim()
+    $normalizedAppName = $AppName.Trim()
+    return (@('Windows Sign In', 'Microsoft Edge', 'Microsoft Office') -contains $normalizedAppName) -or ($normalizedAppName -match '(?i)Sangfor')
 }
 
 function Test-AuditLogUserActor {
@@ -1355,7 +1356,7 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
-| where AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")
+| where TableName != "SigninLogs" or (AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Microsoft Office") and AppDisplayName !has "Sangfor")
 | project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __isSuccess, __ip, __isPublicIp, __isTrustedIp
 "@
 $suspiciousIpKql = @"
