@@ -991,23 +991,18 @@ function New-AuditLogsOptimizedQuery {
 AuditLogs
 | where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
 | extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
-    "Add app role assignment to service principal",
-    "Add app role assignment to user",
-    "Add app role assignment to group",
     "Add delegated permission grant",
-    "Add application",
-    "Update application",
     "Consent to application",
+    "Create application – Certificates and secrets management",
     "Add owner to application",
-    "Remove app role assignment from service principal",
+    "Add app role assignment to service principal",
+    "Update application – Certificates and secrets management",
     "Remove delegated permission grant",
-    "Add service principal",
-    "Update service principal",
-    "Delete application",
-    "Delete service principal"
+    "Remove app role assignment from service principal"
 )
 | extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
 | where __isPermissionChange or __isDeleteOperation
+| where OperationName !contains "PIM"
 | extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
 | project TimeGenerated, 
     OperationName, 
@@ -1121,15 +1116,18 @@ MailboxStatisticsDCR_CL
 | extend RecipientTypeDetails = tostring(column_ifexists("RecipientTypeDetails", ""))
 | extend AvailableSpaceGB = todouble(column_ifexists("AvailableSpaceGB", real(null)))
 | extend QuotaLimitGB = todouble(column_ifexists("QuotaLimitGB", real(null)))
+| extend UserPrincipalName = tostring(column_ifexists("UserPrincipalName", ""))
 | where RecipientTypeDetails contains "SharedMailbox"
     or (isnotnull(QuotaLimitGB) and QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB) and AvailableSpaceGB < QuotaLimitGB * 0.05)
-| summarize arg_max(TimeGenerated, *) by RecipientTypeDetails
+| where isnotempty(UserPrincipalName)
+| summarize arg_max(TimeGenerated, *) by UserPrincipalName
 | project TimeGenerated, 
+    UserPrincipalName,
     RecipientTypeDetails, 
     AvailableSpaceGB, 
     QuotaLimitGB, 
     UsagePercent = iff(QuotaLimitGB > 0 and isnotnull(AvailableSpaceGB), round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2), real(null))
-| order by TimeGenerated desc
+| order by UsagePercent desc
 "@
 }
 

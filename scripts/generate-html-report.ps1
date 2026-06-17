@@ -1111,16 +1111,9 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
         if ($success -eq 'false') {
             $record = New-EventRecord -Table $table -Row $row -Reason '失败/异常'
             if ($table -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs')) {
-                # 过滤掉主体/应用摘要中含有 keyence.com.cn 的行
-                $userLower = if ($record.User) { $record.User.ToLower() } else { '' }
-                $opLower = if ($record.Operation) { $record.Operation.ToLower() } else { '' }
-                $detailLower = if ($record.Detail) { $record.Detail.ToLower() } else { '' }
-                $containsKeyence = ($userLower -match 'keyence\.com\.cn') -or ($opLower -match 'keyence\.com\.cn') -or ($detailLower -match 'keyence\.com\.cn')
-                if (-not $containsKeyence) {
-                    if ($table -ne 'AADServicePrincipalSignInLogs' -or $rowEventCount -gt 10) {
-                        $failedSignins.Add($record) | Out-Null
-                    }
-                }
+                # 不再在记录级别过滤 keyence.com.cn，改为在分组后过滤（与KQL逻辑一致）
+                # 不再在记录级别过滤 EventCount > 10，改为在分组后过滤（与KQL逻辑一致）
+                $failedSignins.Add($record) | Out-Null
             } elseif ($table -in @('DCRLogErrors', 'IntuneAuditLogsDCR_CL')) {
                 # These tables have dedicated sections below.
             } else {
@@ -1405,27 +1398,21 @@ $deleteDisableKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
-    "Add app role assignment to service principal",
-    "Add app role assignment to user",
-    "Add app role assignment to group",
     "Add delegated permission grant",
-    "Add application",
-    "Update application",
     "Consent to application",
+    "Create application – Certificates and secrets management",
     "Add owner to application",
-    "Remove app role assignment from service principal",
+    "Add app role assignment to service principal",
+    "Update application – Certificates and secrets management",
     "Remove delegated permission grant",
-    "Add service principal",
-    "Update service principal",
-    "Delete application",
-    "Delete service principal"
+    "Remove app role assignment from service principal"
 )
 | extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
 | where __isDeleteOperation
+| where OperationName !contains "PIM"
 | extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
 | project TimeGenerated, OperationName, AADOperationType, Actor=tostring(InitiatedBy.user.userPrincipalName), Target=tostring(TargetResources), Result, CorrelationId, __RecordKind
 | order by TimeGenerated desc
-| take 200
 "@
 $suspiciousSuccessKql = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs
@@ -1446,34 +1433,27 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | project TimeGenerated, TableName, UserOrApp, AppDisplayName, IPAddress=__ip, ResultType, ResultDescription=__ResultDescriptionRaw
 | sort by TimeGenerated desc
 "@
+# 注意：实际的可疑IP计算在PowerShell中完成（Get-SuspiciousIpSlidingWindowRows函数）
+# 因为实际查询返回的数据已经按用户/应用/IP聚合过了，不能直接用KQL的自连接来计算滑动窗口
+# 以下KQL仅用于展示目的，说明数据筛选逻辑
 $suspiciousIpKql = @"
+// 可疑IP检测逻辑（实际计算在PowerShell中完成）
+// 1. 查询SigninLogs中非信任IP的公共IP登录记录
+// 2. 按IP分组，使用3天滑动窗口计算登录次数
+// 3. 只显示窗口内登录次数 >= 10 的IP
+//
+// 基础数据查询（与New-SigninLogsOptimizedQuery一致）：
 SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend IPAddressText = tostring(column_ifexists("IPAddress", ""))
-| extend __ip = extract(@"(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])", 1, IPAddressText)
+| extend IPAddress = tostring(column_ifexists("IPAddress", ""))
+| extend __ip = extract(@"(\d{1,3}(?:\.\d{1,3}){3})", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
-| extend EventCountValue = tolong(column_ifexists("EventCount", 1))
-| extend EventCountValue = iff(isnull(EventCountValue) or EventCountValue < 1, 1, EventCountValue)
-| project IP=__ip, TimeGenerated, EventCountValue
-| join kind=inner (
-    SigninLogs
-    | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-    | extend IPAddressText = tostring(column_ifexists("IPAddress", ""))
-    | extend __ip = extract(@"(?:^|[^0-9])((?:[0-9]{1,3}\.){3}[0-9]{1,3})(?:$|[^0-9])", 1, IPAddressText)
-    | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
-    | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
-    | where __isPublicIp and not(__isTrustedIp)
-    | extend CandidateCount = tolong(column_ifexists("EventCount", 1))
-    | extend CandidateCount = iff(isnull(CandidateCount) or CandidateCount < 1, 1, CandidateCount)
-    | project IP=__ip, CandidateTime=TimeGenerated, CandidateCount
-) on IP
-| where CandidateTime between (TimeGenerated .. TimeGenerated + 3d)
-| summarize WindowCount=sum(CandidateCount), FirstTime=min(CandidateTime), LastTime=max(CandidateTime) by IP, WindowStart=TimeGenerated
-| summarize Count=max(WindowCount), FirstTime=min(FirstTime), LastTime=max(LastTime) by IP
-| where Count >= 10
-| sort by Count desc, IP asc
+| summarize EventCount=count() by IPAddress=__ip, TimeGenerated
+| order by TimeGenerated desc
+// 然后PowerShell中使用Get-SuspiciousIpSlidingWindowRows函数计算3天滑动窗口
+// 筛选条件：窗口内登录次数 >= 10
 "@
 $clientIpRankLogic = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs, AuditLogs, DCRLogErrors, IntuneAuditLogsDCR_CL
@@ -1492,23 +1472,18 @@ $permissionKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
-    "Add app role assignment to service principal",
-    "Add app role assignment to user",
-    "Add app role assignment to group",
     "Add delegated permission grant",
-    "Add application",
-    "Update application",
     "Consent to application",
+    "Create application – Certificates and secrets management",
     "Add owner to application",
-    "Remove app role assignment from service principal",
+    "Add app role assignment to service principal",
+    "Update application – Certificates and secrets management",
     "Remove delegated permission grant",
-    "Add service principal",
-    "Update service principal",
-    "Delete application",
-    "Delete service principal"
+    "Remove app role assignment from service principal"
 )
 | extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
 | where __isPermissionChange and not(__isDeleteOperation)
+| where OperationName !contains "PIM"
 | extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
 | project TimeGenerated, 
     OperationName, 
@@ -1523,7 +1498,17 @@ AuditLogs
 
 
 $failedSigninGrouped = Group-EventRecords -Rows $failedSignins -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninGrouped | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
+# 在分组后应用过滤（与KQL逻辑一致）：
+# 1. 过滤掉主体/应用摘要中含有 keyence.com.cn 的行
+# 2. 对于 AADServicePrincipalSignInLogs，只保留 Count > 10 的行
+$failedSigninFiltered = @($failedSigninGrouped | Where-Object {
+    $concatText = "$($_.User) $($_.Operation) $($_.Detail)"
+    $containsKeyence = $concatText -match 'keyence\.com\.cn'
+    if ($containsKeyence) { return $false }
+    if ($_.Table -eq 'AADServicePrincipalSignInLogs' -and $_.Count -le 10) { return $false }
+    return $true
+})
+$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninFiltered | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
 })
 # 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生时间
@@ -1588,7 +1573,14 @@ $sharedMailboxKql = New-MailboxStatisticsOptimizedQuery -StartUtc $actualStartUt
 $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
     param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.CapacityText, $r.CapacityRisk)
 })
-$dcrLogErrorsKql = "DCRLogErrors`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)"
+# DCRLogErrors 的 KQL 需要反映实际的聚合逻辑
+$dcrLogErrorsKql = @"
+DCRLogErrors
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by InputStreamId, OperationName, Message
+| project TimeGenerated, FirstTime, LastTime, EventCount, InputStreamId, OperationName, Message
+| order by TimeGenerated desc
+"@
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) @($r.Time, $r.Target, $r.Operation, $r.Detail)
 })
@@ -1612,7 +1604,20 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
     
     @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTargetForReport -Target $r.Target), (Format-CompactTextForReport -Text $permValue -MaxLength 80))
 })
-$intuneAuditKql = "IntuneAuditLogsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)"
+# IntuneAuditLogs 的 KQL 需要反映实际的聚合逻辑
+$intuneAuditKql = @"
+IntuneAuditLogsDCR_CL
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| extend ActorDisplayName = tostring(coalesce(column_ifexists("InitiatorDisplayName", ""), column_ifexists("InitiatorDisplayName_s", ""), column_ifexists("ActorDisplayName", ""), column_ifexists("ActorDisplayName_s", ""), column_ifexists("DisplayName", ""), column_ifexists("DisplayName_s", ""), column_ifexists("InitiatedByUserDisplayName", ""), column_ifexists("InitiatedByUserDisplayName_s", ""), column_ifexists("UserDisplayName", ""), column_ifexists("UserDisplayName_s", ""), ""))
+| extend ActorUserPrincipalName = tostring(coalesce(column_ifexists("InitiatorUserPrincipalName", ""), column_ifexists("InitiatorUserPrincipalName_s", ""), column_ifexists("ActorInitiator", ""), column_ifexists("ActorUPN", ""), column_ifexists("ActorUPN_s", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName_s", ""), column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("InitiatedByUserPrincipalName_s", ""), column_ifexists("UserPrincipalName", ""), column_ifexists("UserPrincipalName_s", ""), column_ifexists("UPN", ""), column_ifexists("UPN_s", ""), column_ifexists("Actor", ""), column_ifexists("Actor_s", ""), column_ifexists("UserId", ""), column_ifexists("UserId_s", ""), column_ifexists("Identity", ""), column_ifexists("Identity_s", ""), ""))
+| extend Actor = case(isnotempty(ActorDisplayName) and isnotempty(ActorUserPrincipalName) and ActorDisplayName != ActorUserPrincipalName, strcat(ActorDisplayName, " / ", ActorUserPrincipalName), isnotempty(ActorDisplayName), ActorDisplayName, ActorUserPrincipalName)
+| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("OperationName_s", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("ActivityDisplayName_s", ""), column_ifexists("Activity", ""), column_ifexists("Activity_s", ""), column_ifexists("Operation", ""), column_ifexists("Operation_s", ""), column_ifexists("Action", ""), column_ifexists("Action_s", ""), column_ifexists("AuditEventType", ""), column_ifexists("AuditEventType_s", ""), "Intune Audit Event"))
+| extend TargetDeviceName = tostring(coalesce(column_ifexists("TargetDeviceName", ""), column_ifexists("TargetDeviceName_s", ""), column_ifexists("DeviceName", ""), column_ifexists("DeviceName_s", ""), column_ifexists("ManagedDeviceName", ""), column_ifexists("ManagedDeviceName_s", ""), ""))
+| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("Result_s", ""), column_ifexists("ResultStatus", ""), column_ifexists("ResultStatus_s", ""), column_ifexists("Status", ""), column_ifexists("Status_s", ""), column_ifexists("ActivityResult", ""), column_ifexists("ActivityResult_s", ""), column_ifexists("OperationStatus", ""), column_ifexists("OperationStatus_s", ""), ""))
+| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("ResultDescription_s", ""), column_ifexists("FailureReason", ""), column_ifexists("FailureReason_s", ""), column_ifexists("Message", ""), column_ifexists("Message_s", ""), column_ifexists("ErrorMessage", ""), column_ifexists("ErrorMessage_s", ""), ""))
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, ActorDisplayName, ActorUserPrincipalName, OperationName, TargetDeviceName, Result, ResultDescription
+| order by TimeGenerated desc
+"@
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
 $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
