@@ -1408,26 +1408,48 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
 | extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
 | extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
-| extend AppDisplayName = tostring(coalesce(column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), "Unknown"))
+| extend AppDisplayName = case(isnotempty(tostring(column_ifexists("AppDisplayName", ""))), tostring(column_ifexists("AppDisplayName", "")), isnotempty(tostring(column_ifexists("ServicePrincipalName", ""))), tostring(column_ifexists("ServicePrincipalName", "")), isnotempty(tostring(column_ifexists("ManagedIdentityName", ""))), tostring(column_ifexists("ManagedIdentityName", "")), "Unknown")
 | extend UserOrApp = strcat(tostring(column_ifexists("UserPrincipalName", "")), " ", tostring(column_ifexists("UserDisplayName", "")), " ", tostring(column_ifexists("Identity", "")), " ", AppDisplayName)
-| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
-| extend __isSuccess = tolower(ResultType) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend IPAddressText = case(isnotempty(tostring(column_ifexists("IPAddress", ""))), tostring(column_ifexists("IPAddress", "")), isnotempty(tostring(column_ifexists("IpAddress", ""))), tostring(column_ifexists("IpAddress", "")), isnotempty(tostring(column_ifexists("ClientIP", ""))), tostring(column_ifexists("ClientIP", "")), tostring(column_ifexists("ClientIpAddress", "")))
+| extend __status = tolower(ResultType), __resultCode = tolong(ResultType)
+| extend __isSuccess = __status in ("true","success","succeeded","completed","complete","ok","pass","passed","0") or __resultCode == 0
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddressText)
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
 | where UserOrApp !has "Sangfor"
 | where TableName != "SigninLogs" or AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Microsoft Office")
-| project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __isSuccess, __ip, __isPublicIp, __isTrustedIp
+| project TimeGenerated, TableName, UserOrApp, AppDisplayName, IPAddress=__ip, ResultType, ResultDescription=__ResultDescriptionRaw
+| sort by TimeGenerated desc
 "@
 $suspiciousIpKql = @"
 SigninLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
+| extend IPAddressText = tostring(column_ifexists("IPAddress", ""))
+| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddressText)
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isPublicIp and not(__isTrustedIp)
-| project-away __ip, __isPublicIp, __isTrustedIp
+| extend EventCountValue = tolong(column_ifexists("EventCount", 1))
+| extend EventCountValue = iff(isnull(EventCountValue) or EventCountValue < 1, 1, EventCountValue)
+| project IP=__ip, TimeGenerated, EventCountValue
+| join kind=inner (
+    SigninLogs
+    | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+    | extend IPAddressText = tostring(column_ifexists("IPAddress", ""))
+    | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddressText)
+    | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
+    | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
+    | where __isPublicIp and not(__isTrustedIp)
+    | extend CandidateCount = tolong(column_ifexists("EventCount", 1))
+    | extend CandidateCount = iff(isnull(CandidateCount) or CandidateCount < 1, 1, CandidateCount)
+    | project IP=__ip, CandidateTime=TimeGenerated, CandidateCount
+) on IP
+| where CandidateTime between (TimeGenerated .. TimeGenerated + 3d)
+| summarize WindowCount=sum(CandidateCount), FirstTime=min(CandidateTime), LastTime=max(CandidateTime) by IP, WindowStart=TimeGenerated
+| summarize Count=max(WindowCount), FirstTime=min(FirstTime), LastTime=max(LastTime) by IP
+| where Count >= 10
+| sort by Count desc, IP asc
 "@
 $clientIpRankLogic = @"
 union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSignInLogs, SigninLogs, AuditLogs, DCRLogErrors, IntuneAuditLogsDCR_CL
@@ -1508,7 +1530,21 @@ $licenseTableRows = @(
 $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $licenseTableRows -Columns @('SkuPartNumber', '产品名称', '总数', '已分配', '剩余', '状态') -CellBuilder {
     param($r) @($r.SkuPartNumber, $r.ProductName, $r.Total, $r.Used, $r.Remaining, $r.Status)
 } -RawHtmlColumns @('状态'))
-$sharedMailboxKql = "MailboxStatisticsDCR_CL`r`n| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)`r`n| extend CapacityRisk = todouble(QuotaLimitGB) > 0 and isnotnull(todouble(AvailableSpaceGB)) and todouble(AvailableSpaceGB) < todouble(QuotaLimitGB) * 0.05`r`n| where RecipientTypeDetails contains `"Shared`" or MailboxType contains `"Shared`" or tostring(IsSharedMailbox) in~ (`"true`", `"1`", `"yes`", `"y`") or CapacityRisk`r`n| project-away CapacityRisk"
+$sharedMailboxKql = @"
+MailboxStatisticsDCR_CL
+| where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| extend RecipientTypeDetailsText = tostring(column_ifexists("RecipientTypeDetails", "")), RecipientTypeDetailText = tostring(column_ifexists("RecipientTypeDetail", "")), RecipientTypeDetailsSuffixText = tostring(column_ifexists("RecipientTypeDetails_s", ""))
+| extend MailboxTypeText = tostring(column_ifexists("MailboxType", "")), MailboxRecipientTypeText = tostring(column_ifexists("MailboxRecipientType", "")), RecipientTypeText = tostring(column_ifexists("RecipientType", ""))
+| extend IsSharedMailboxText = tostring(column_ifexists("IsSharedMailbox", "")), IsSharedMailBoxText = tostring(column_ifexists("IsSharedMailBox", "")), IsSharedText = tostring(column_ifexists("IsShared", "")), SharedMailboxText = tostring(column_ifexists("SharedMailbox", "")), SharedMailBoxText = tostring(column_ifexists("SharedMailBox", ""))
+| extend AvailableSpaceGBValue = todouble(column_ifexists("AvailableSpaceGB", real(null))), AvailableSpaceInGBValue = todouble(column_ifexists("AvailableSpaceInGB", real(null))), AvailableSpaceValue = todouble(column_ifexists("AvailableSpace", real(null)))
+| extend QuotaLimitGBValue = todouble(column_ifexists("QuotaLimitGB", real(null))), QuotaGBValue = todouble(column_ifexists("QuotaGB", real(null))), StorageQuotaGBValue = todouble(column_ifexists("StorageQuotaGB", real(null))), ProhibitSendReceiveQuotaGBValue = todouble(column_ifexists("ProhibitSendReceiveQuotaGB", real(null)))
+| extend AvailableGB = coalesce(AvailableSpaceGBValue, AvailableSpaceInGBValue, AvailableSpaceValue), QuotaGB = coalesce(QuotaLimitGBValue, QuotaGBValue, StorageQuotaGBValue, ProhibitSendReceiveQuotaGBValue)
+| extend CapacityRisk = isnotnull(QuotaGB) and QuotaGB > 0 and isnotnull(AvailableGB) and AvailableGB < QuotaGB * 0.05
+| extend MailboxTypeCombined = strcat(RecipientTypeDetailsText, " ", RecipientTypeDetailText, " ", RecipientTypeDetailsSuffixText, " ", MailboxTypeText, " ", MailboxRecipientTypeText, " ", RecipientTypeText)
+| extend SharedFlagCombined = strcat(IsSharedMailboxText, " ", IsSharedMailBoxText, " ", IsSharedText, " ", SharedMailboxText, " ", SharedMailBoxText)
+| where MailboxTypeCombined has "Shared" or SharedFlagCombined has_any ("true", "1", "yes", "y", "shared", "sharedmailbox") or CapacityRisk
+| project-away RecipientTypeDetailsText, RecipientTypeDetailText, RecipientTypeDetailsSuffixText, MailboxTypeText, MailboxRecipientTypeText, RecipientTypeText, IsSharedMailboxText, IsSharedMailBoxText, IsSharedText, SharedMailboxText, SharedMailBoxText, AvailableSpaceGBValue, AvailableSpaceInGBValue, AvailableSpaceValue, QuotaLimitGBValue, QuotaGBValue, StorageQuotaGBValue, ProhibitSendReceiveQuotaGBValue, MailboxTypeCombined, SharedFlagCombined
+"@
 $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
     param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.CapacityText, $r.CapacityRisk)
 })
