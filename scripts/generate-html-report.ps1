@@ -558,6 +558,23 @@ function Test-AllowedSigninApp {
     return (@('Windows Sign In', 'Microsoft Edge', 'Microsoft Office') -contains $normalizedAppName) -or ($normalizedAppName -match '(?i)Sangfor')
 }
 
+function Test-SangforRelatedSigninRow {
+    param(
+        [object]$Row,
+        [object]$EventRecord = $null
+    )
+
+    $text = @(
+        (Get-AnyFieldValue -Row $Row -Names @('UserPrincipalName', 'UserDisplayName', 'Identity', 'AppDisplayName', 'ServicePrincipalName', 'Application', 'ApplicationDisplayName', 'ClientAppUsed', 'ManagedIdentityName') -Default ''),
+        $(if ($null -ne $EventRecord) { $EventRecord.User } else { '' }),
+        $(if ($null -ne $EventRecord) { $EventRecord.Operation } else { '' }),
+        $(if ($null -ne $EventRecord) { $EventRecord.Target } else { '' }),
+        $(if ($null -ne $EventRecord) { $EventRecord.Detail } else { '' })
+    ) -join ' '
+
+    return ($text -match '(?i)Sangfor')
+}
+
 function Test-AuditLogUserActor {
     param([object]$Row)
 
@@ -1058,6 +1075,11 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
                 $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason 'AuditLogs Result=success')) | Out-Null
             }
 
+            $aadOperationTypeForDelete = Get-AnyFieldValue -Row $row -Names @('AADOperationType') -Default ''
+            if ($aadOperationTypeForDelete -eq 'Delete') {
+                $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
+            }
+
             if (-not (Test-AuditLogUserActor -Row $row)) { continue }
             if (Test-PimAuditNoise -Row $row) { continue }
         }
@@ -1099,19 +1121,16 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
             }
         }
 
-        $aadOperationType = Get-AnyFieldValue -Row $row -Names @('AADOperationType') -Default ''
-        if ($table -eq 'AuditLogs' -and $aadOperationType -eq 'Delete') {
-            $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
-        }
-
         if ($table -in @('AADManagedIdentitySignInLogs', 'AADServicePrincipalSignInLogs', 'SigninLogs') -and $success -eq 'true' -and $isUsablePublicIp -and -not $isTrustedIp) {
             $appName = Get-SigninAppName -Row $row
             $isAllowedInteractiveApp = ($table -eq 'SigninLogs' -and (Test-AllowedSigninApp -AppName $appName))
-            if (-not $isAllowedInteractiveApp) {
+            if (-not $isAllowedInteractiveApp -and -not (Test-SangforRelatedSigninRow -Row $row)) {
                 $event = New-EventRecord -Table $table -Row $row -Reason "可信位置外成功登录，应用：$appName"
-                $suspiciousSigninSuccess.Add($event) | Out-Null
-                if ($table -eq 'SigninLogs') {
-                    $suspiciousIpReasons[$ip] = 'SigninLogs 可信位置外成功登录'
+                if (-not (Test-SangforRelatedSigninRow -Row $row -EventRecord $event)) {
+                    $suspiciousSigninSuccess.Add($event) | Out-Null
+                    if ($table -eq 'SigninLogs') {
+                        $suspiciousIpReasons[$ip] = 'SigninLogs 可信位置外成功登录'
+                    }
                 }
             }
         }
@@ -1378,13 +1397,15 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 | extend __ResultSignatureRaw = tostring(column_ifexists("ResultSignature", "")), __ResultRaw = tostring(column_ifexists("Result", "")), __ResultTypeRaw = tostring(column_ifexists("ResultType", "")), __StatusRaw = tostring(column_ifexists("Status", "")), __ResultDescriptionRaw = tostring(column_ifexists("ResultDescription", ""))
 | extend ResultType = case(isnotempty(__ResultSignatureRaw), __ResultSignatureRaw, isnotempty(__ResultRaw), __ResultRaw, isnotempty(__ResultTypeRaw), __ResultTypeRaw, isnotempty(__StatusRaw), __StatusRaw, isnotempty(__ResultDescriptionRaw), __ResultDescriptionRaw, "")
 | extend AppDisplayName = tostring(coalesce(column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), "Unknown"))
+| extend UserOrApp = strcat(tostring(column_ifexists("UserPrincipalName", "")), " ", tostring(column_ifexists("UserDisplayName", "")), " ", tostring(column_ifexists("Identity", "")), " ", AppDisplayName)
 | extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
 | extend __isSuccess = tolower(ResultType) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
 | extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
 | extend __isPublicIp = isnotempty(__ip) and not(ipv4_is_private(__ip))
 | extend __isTrustedIp = __isPublicIp and ipv4_is_in_any_range(__ip, $trustedIpKqlLiteral)
 | where __isSuccess and __isPublicIp and not(__isTrustedIp)
-| where TableName != "SigninLogs" or (AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Microsoft Office") and AppDisplayName !has "Sangfor")
+| where UserOrApp !has "Sangfor"
+| where TableName != "SigninLogs" or AppDisplayName !in~ ("Windows Sign In", "Microsoft Edge", "Microsoft Office")
 | project-away __ResultSignatureRaw, __ResultRaw, __ResultTypeRaw, __StatusRaw, __ResultDescriptionRaw, __isSuccess, __ip, __isPublicIp, __isTrustedIp
 "@
 $suspiciousIpKql = @"
