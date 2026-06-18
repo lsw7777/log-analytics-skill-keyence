@@ -260,28 +260,61 @@ function Get-SuspiciousIpSlidingWindowRows {
     param(
         [object[]]$Rows,
         [int]$WindowDays = 3,
-        [int]$Threshold = 10
+        [int]$Threshold = 10,
+        [DateTime]$StartUtc = [DateTime]::MinValue,
+        [DateTime]$EndUtc = [DateTime]::MaxValue
     )
+
+    # 计算实际时间范围（天）
+    $totalDays = if ($StartUtc -ne [DateTime]::MinValue -and $EndUtc -ne [DateTime]::MaxValue) {
+        ($EndUtc - $StartUtc).TotalDays
+    } else { 0 }
+
+    # 如果时间范围不足3天，使用每天5次的阈值
+    $effectiveThreshold = $Threshold
+    $useDailyThreshold = $false
+    if ($totalDays -gt 0 -and $totalDays -lt $WindowDays) {
+        $effectiveThreshold = 5
+        $useDailyThreshold = $true
+    }
 
     $result = [System.Collections.Generic.List[object]]::new()
     foreach ($group in @($Rows | Group-Object -Property IP)) {
         $events = @($group.Group | Where-Object { $_.TimeValue -ne [DateTime]::MinValue } | Sort-Object TimeValue)
         if ($events.Count -eq 0) { continue }
 
-        $left = 0
-        $windowCount = 0
         $maxWindowCount = 0
-        for ($right = 0; $right -lt $events.Count; $right++) {
-            $windowCount += [int]$events[$right].Count
-            $windowEnd = $events[$right].TimeValue
-            while ($left -le $right -and $events[$left].TimeValue -lt $windowEnd.AddDays(-$WindowDays)) {
-                $windowCount -= [int]$events[$left].Count
-                $left++
+
+        if ($useDailyThreshold) {
+            # 时间范围不足3天时，按天统计，判断每天是否多于5次
+            $dailyCounts = @{}
+            foreach ($event in $events) {
+                $dayKey = $event.TimeValue.ToString('yyyy-MM-dd')
+                if (-not $dailyCounts.ContainsKey($dayKey)) {
+                    $dailyCounts[$dayKey] = 0
+                }
+                $dailyCounts[$dayKey] += [int]$event.Count
             }
-            if ($windowCount -gt $maxWindowCount) { $maxWindowCount = $windowCount }
+            # 找出最大的单日登录次数
+            foreach ($count in $dailyCounts.Values) {
+                if ($count -gt $maxWindowCount) { $maxWindowCount = $count }
+            }
+        } else {
+            # 时间范围>=3天时，使用滑动窗口算法
+            $left = 0
+            $windowCount = 0
+            for ($right = 0; $right -lt $events.Count; $right++) {
+                $windowCount += [int]$events[$right].Count
+                $windowEnd = $events[$right].TimeValue
+                while ($left -le $right -and $events[$left].TimeValue -lt $windowEnd.AddDays(-$WindowDays)) {
+                    $windowCount -= [int]$events[$left].Count
+                    $left++
+                }
+                if ($windowCount -gt $maxWindowCount) { $maxWindowCount = $windowCount }
+            }
         }
 
-        if ($maxWindowCount -ge $Threshold) {
+        if ($maxWindowCount -ge $effectiveThreshold) {
             $result.Add([PSCustomObject]@{ IP = $group.Name; Count = $maxWindowCount }) | Out-Null
         }
     }
@@ -681,59 +714,190 @@ function Get-LicenseFromMgGraph {
         throw '用户选择跳过 Microsoft Graph License API 验证。'
     }
 
-    # 检查并安装 Microsoft.Graph.Authentication 模块
-    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Authentication)) {
-        try {
-            Write-Host '正在安装 Microsoft.Graph.Authentication 模块...' -ForegroundColor Cyan
-            Install-Module -Name Microsoft.Graph.Authentication -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-        } catch {
-            throw "无法安装 Microsoft.Graph.Authentication 模块：$($_.Exception.Message)"
-        }
-    }
-    Import-Module Microsoft.Graph.Authentication -Force -ErrorAction Stop
-
-    # 检查并安装 Microsoft.Graph.Identity.DirectoryManagement 模块（包含 Get-MgSubscribedSku）
-    if (-not (Get-Module -ListAvailable -Name Microsoft.Graph.Identity.DirectoryManagement)) {
-        try {
-            Write-Host '正在安装 Microsoft.Graph.Identity.DirectoryManagement 模块...' -ForegroundColor Cyan
-            Install-Module -Name Microsoft.Graph.Identity.DirectoryManagement -Force -Scope CurrentUser -AllowClobber -ErrorAction Stop
-        } catch {
-            throw "无法安装 Microsoft.Graph.Identity.DirectoryManagement 模块：$($_.Exception.Message)"
-        }
-    }
-    Import-Module Microsoft.Graph.Identity.DirectoryManagement -Force -ErrorAction Stop
+    # 使用 REST API + AuthCode 方式获取 License 数据（不依赖 PowerShell 模块）
+    # 21v China 环境专用
+    $loginBase = 'https://login.chinacloudapi.cn'
+    $graphEndpoint = 'https://microsoftgraph.chinacloudapi.cn/v1.0/subscribedSkus'
+    $tenant = if ([string]::IsNullOrWhiteSpace($TenantId)) { 'common' } else { $TenantId }
+    $authorizationEndpoint = "$loginBase/$tenant/oauth2/v2.0/authorize"
+    $tokenEndpoint = "$loginBase/$tenant/oauth2/v2.0/token"
+    $scope = 'https://microsoftgraph.chinacloudapi.cn/Organization.Read.All offline_access'
 
     try {
         Write-Host ''
-        Write-Host '=== Microsoft Graph License API Login Required (MgGraph - 21v China) ===' -ForegroundColor Yellow
+        Write-Host '=== Microsoft Graph License API Login Required (REST API + AuthCode - 21v China) ===' -ForegroundColor Yellow
         Write-Host "ClientId: $ClientId" -ForegroundColor Cyan
         Write-Host "TenantId: $TenantId" -ForegroundColor Cyan
-        Write-Host 'Environment: China (21v)' -ForegroundColor Cyan
-        Write-Host '正在打开浏览器进行登录... 请使用浏览器完成认证。' -ForegroundColor Cyan
+        Write-Host '使用 REST API 方式（不依赖 PowerShell 模块）' -ForegroundColor Cyan
 
-        # 使用 Connect-MgGraph 连接中国版 Graph
-        Connect-MgGraph -Environment China -ClientId $ClientId -TenantId $TenantId -ErrorAction Stop
+        # 生成 OAuth 授权请求 URL
+        $state = [Guid]::NewGuid().ToString()
+        $redirectUri = 'http://localhost'
+        
+        $authUrl = "$authorizationEndpoint?" + [string]::Join('&', @(
+            "response_type=code",
+            "client_id=$ClientId",
+            "redirect_uri=$redirectUri",
+            "scope=$scope",
+            "state=$state",
+            "response_mode=form_post"
+        ))
 
-        Write-Host 'Microsoft Graph (21v China) 登录成功。' -ForegroundColor Green
+        Write-Host ''
+        Write-Host '请在浏览器中打开以下 URL 进行认证：' -ForegroundColor Cyan
+        Write-Host $authUrl -ForegroundColor Cyan
+        Write-Host ''
+        Write-Host '或使用以下 QR 码在手机上认证：' -ForegroundColor Cyan
+        Write-Host "https://account.live.com/qrcode?q=$([uri]::EscapeDataString($authUrl))" -ForegroundColor Cyan
+        Write-Host ''
 
-        # 获取所有 License 信息
-        $skus = Get-MgSubscribedSku -All -ErrorAction Stop
+        # 打开浏览器
+        Start-Process $authUrl
 
+        # 等待用户认证
+        $authCode = $null
+        $maxWaitSeconds = 300
+        $startTime = Get-Date
+        
+        Write-Host '等待用户完成认证... (最多等待 5 分钟)' -ForegroundColor Cyan
+        Write-Host '认证成功后将自动获取 License 数据。' -ForegroundColor Cyan
+
+        # 使用 HTTP 监听获取授权码
+        $listenUri = $redirectUri + '/callback'
+        $listener = New-Object System.Net.HttpListener
+        $listener.Prefixes.Add($listenUri)
+        $listener.Start()
+
+        try {
+            $task = $listener.GetContextAsync()
+            $webClient = New-Object System.Net.WebClient
+            $webClient.Headers.Add("User-Agent", "LicenseFetcher/1.0")
+            
+            # 启动本地服务器监听回调
+            $callbackTask = [System.Threading.Tasks.Task]::Run({
+                param($listener)
+                try {
+                    $context = $listener.GetContext()
+                    $request = $context.Request
+                    return $request.QueryString
+                } catch {
+                    return $null
+                }
+            })
+
+            while (-not $callbackTask.IsCompleted -and ((Get-Date) -lt $startTime.AddSeconds($maxWaitSeconds))) {
+                Start-Sleep -Milliseconds 100
+                if ($callbackTask.IsCompleted) { break }
+            }
+
+            if ($callbackTask.IsCompleted -and $null -ne $callbackTask.Result) {
+                $query = $callbackTask.Result
+                $authCode = $query.Get('code')
+                if ($authCode) {
+                    Write-Host ''
+                    Write-Host '授权码获取成功！' -ForegroundColor Green
+                }
+            }
+        } finally {
+            $listener.Stop()
+            $listener.Close()
+        }
+
+        if (-not $authCode) {
+            throw '未能获取授权码。请重试或输入 S 跳过验证。'
+        }
+
+        # 用授权码换取 access_token
+        $tokenBody = [ordered]@{
+            grant_type = 'authorization_code'
+            code = $authCode
+            redirect_uri = $redirectUri
+            client_id = $ClientId
+            scope = $scope
+        }
+
+        $tokenResponseText = $null
+        try {
+            $tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $tokenBody -ErrorAction Stop
+            if ($tokenResponse.access_token) {
+                $tokenResponseText = $tokenResponse.access_token
+            }
+        } catch {
+            $body = Get-WebExceptionResponseText -ErrorRecord $_
+            $oauthError = Get-OAuthErrorCode -Body $body
+            if ($oauthError) { throw "OAuth 错误: $oauthError. 详情: $body" }
+            throw "获取 access_token 失败：$($_.Exception.Message)"
+        }
+
+        if ([string]::IsNullOrWhiteSpace($tokenResponseText)) {
+            throw '未能获取有效的 access_token。'
+        }
+
+        Write-Host 'Access token 获取成功，正在获取 License 数据...' -ForegroundColor Green
+
+        # 调用 Microsoft Graph API 获取 subscribedSkus
+        $graphHeaders = @{
+            'Authorization' = "Bearer $tokenResponseText"
+            'Content-Type' = 'application/json'
+            'Accept-Encoding' = 'gzip'
+        }
+
+        $allSkus = @()
+        $url = $graphEndpoint
+        $pageCount = 0
+
+        while ($url) {
+            try {
+                $pageResponse = Invoke-RestMethod -Method Get -Uri $url -Headers $graphHeaders -ErrorAction Stop
+                $allSkus += @($pageResponse.value)
+                $pageCount++
+                
+                if ($pageResponse.'@odata.nextLink') {
+                    $url = $pageResponse.'@odata.nextLink'
+                } else {
+                    $url = $null
+                }
+            } catch {
+                throw "获取 License 数据失败（第$pageCount页）：$($_.Exception.Message)"
+            }
+        }
+
+        if ($allSkus.Count -eq 0) {
+            throw 'Microsoft Graph subscribedSkus 未返回任何许可证 SKU。'
+        }
+
+        Write-Host "成功获取 $($allSkus.Count) 个 License SKU。" -ForegroundColor Green
+
+        # 输出所有获取到的 License 详细信息
+        Write-Host ''
+        Write-Host '=== 获取到的 License 详情 ===' -ForegroundColor Cyan
+        foreach ($sku in $allSkus) {
+            $name = [string]$sku.skuPartNumber
+            $enabledVal = if ($null -ne $sku.prepaidUnits -and $null -ne $sku.prepaidUnits.enabled) { [int]$sku.prepaidUnits.enabled } else { 0 }
+            $consumedVal = if ($null -ne $sku.consumedUnits) { [int]$sku.consumedUnits } else { 0 }
+            Write-Host "  ${name}: Enabled=${enabledVal}, Consumed=${consumedVal}" -ForegroundColor Gray
+        }
+        Write-Host '=============================' -ForegroundColor Cyan
+
+        # 构建 SKU 列表
         $skuList = [System.Collections.Generic.List[object]]::new()
-        foreach ($sku in $skus) {
+        foreach ($sku in $allSkus) {
+            $name = [string]$sku.skuPartNumber
+            if ([string]::IsNullOrWhiteSpace($name)) { continue }
+
             # 总数 = Enabled + Warning + Suspended (所有可用的许可证单元)
-            $enabled = if ($null -ne $sku.PrepaidUnits.Enabled) { [int]$sku.PrepaidUnits.Enabled } else { 0 }
-            $warning = if ($null -ne $sku.PrepaidUnits.Warning) { [int]$sku.PrepaidUnits.Warning } else { 0 }
-            $suspended = if ($null -ne $sku.PrepaidUnits.Suspended) { [int]$sku.PrepaidUnits.Suspended } else { 0 }
+            $enabled = if ($null -ne $sku.prepaidUnits -and $null -ne $sku.prepaidUnits.enabled) { [int]$sku.prepaidUnits.enabled } else { 0 }
+            $warning = if ($null -ne $sku.prepaidUnits -and $null -ne $sku.prepaidUnits.warning) { [int]$sku.prepaidUnits.warning } else { 0 }
+            $suspended = if ($null -ne $sku.prepaidUnits -and $null -ne $sku.prepaidUnits.suspended) { [int]$sku.prepaidUnits.suspended } else { 0 }
             $total = $enabled + $warning + $suspended
             
-            $consumed = if ($null -ne $sku.ConsumedUnits) { [int]$sku.ConsumedUnits } else { 0 }
+            $consumed = if ($null -ne $sku.consumedUnits) { [int]$sku.consumedUnits } else { 0 }
             $remaining = [Math]::Max(0, $total - $consumed)
 
-            Write-Host "  License: $($sku.SkuPartNumber) | Total: $total (Enabled: $enabled, Warning: $warning, Suspended: $suspended) | Consumed: $consumed | Remaining: $remaining" -ForegroundColor Gray
+            Write-Host "  License: $name | Total: $total (Enabled: $enabled, Warning: $warning, Suspended: $suspended) | Consumed: $consumed | Remaining: $remaining" -ForegroundColor Gray
 
             $skuList.Add([PSCustomObject]@{
-                License = $sku.SkuPartNumber
+                License = $name
                 Total = $total
                 Enabled = $enabled
                 ConsumedUnits = $consumed
@@ -743,17 +907,16 @@ function Get-LicenseFromMgGraph {
             }) | Out-Null
         }
 
-        # 断开连接
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
+        if ($skuList.Count -eq 0) {
+            throw '未找到有效的 License SKU。'
+        }
 
         return [PSCustomObject]@{
             Success = $true
-            Message = "License 总量已通过 Microsoft Graph (21v China) Get-MgSubscribedSku 获取。"
+            Message = "License 总量已通过 Microsoft Graph (21v China) REST API subscribedSkus 获取。"
             SkuList = $skuList.ToArray()
         }
     } catch {
-        # 确保断开连接
-        Disconnect-MgGraph -ErrorAction SilentlyContinue
         throw "无法通过 Microsoft Graph (21v China) 获取 License 信息：$($_.Exception.Message)"
     }
 }
@@ -886,6 +1049,9 @@ function Get-GraphAccessTokenCandidates {
 }
 
 function Get-LicenseSkuTotalsFromGraph {
+    # 只使用 Microsoft Graph PowerShell SDK (Connect-MgGraph + Get-MgSubscribedSku)
+    # 不再使用 DeviceCode 或 REST API 回退
+    # 使用 AuthCode 认证方式（浏览器登录）
     $result = [PSCustomObject]@{
         Success = $false
         Message = ''
@@ -893,9 +1059,18 @@ function Get-LicenseSkuTotalsFromGraph {
         SkuList = @()
     }
 
+    $ClientId = '5bbea6de-1297-488f-aff5-9b55f4c61c3e'
+    $TenantId = '420c4dab-8603-402f-afe0-75bc28c51c13'
+
     try {
-        # 优先使用 Microsoft Graph PowerShell SDK (Connect-MgGraph + Get-MgSubscribedSku)
-        $mgResult = Get-LicenseFromMgGraph
+        Write-Host ''
+        Write-Host '=== 开始通过 Microsoft Graph (AuthCode) 获取 License 数据 ===' -ForegroundColor Cyan
+        Write-Host "ClientId: $ClientId" -ForegroundColor Cyan
+        Write-Host "TenantId: $TenantId" -ForegroundColor Cyan
+        
+        # 直接使用 Connect-MgGraph + Get-MgSubscribedSku 获取 License 数据
+        $mgResult = Get-LicenseFromMgGraph -ClientId $ClientId -TenantId $TenantId
+        
         if ($mgResult.Success) {
             $map = @{}
             $skuList = [System.Collections.Generic.List[object]]::new()
@@ -922,73 +1097,13 @@ function Get-LicenseSkuTotalsFromGraph {
             $result.Message = $mgResult.Message
             $result.Skus = $map
             $result.SkuList = $skuList.ToArray()
+            Write-Host ''
+            Write-Host "=== License 数据获取成功，共 $($skuList.Count) 个 License ===" -ForegroundColor Green
             return $result
         }
     } catch {
-        # MgGraph 失败，继续尝试其他方式
-        Write-Host "MgGraph 方式失败: $($_.Exception.Message)" -ForegroundColor Yellow
-    }
-
-    # 回退到 REST API 方式
-    try {
-        $tokenCandidates = Get-GraphAccessTokenCandidates
-        if ($tokenCandidates.Candidates.Count -eq 0) {
-            throw "未能获取 Microsoft Graph 访问令牌。$($tokenCandidates.Errors -join '；')"
-        }
-
-        $response = $null
-        $callErrors = [System.Collections.Generic.List[string]]::new()
-        foreach ($candidate in $tokenCandidates.Candidates) {
-            try {
-                $response = Invoke-RestMethod -Method Get -Uri $candidate.Endpoint -Headers @{ Authorization = "Bearer $($candidate.Token)" } -ErrorAction Stop
-                break
-            } catch {
-                $callErrors.Add("$($candidate.Source): $($_.Exception.Message)") | Out-Null
-            }
-        }
-        if ($null -eq $response) {
-            throw "Microsoft Graph subscribedSkus 调用失败。$($callErrors -join '；')"
-        }
-
-        $map = @{}
-        $skuList = [System.Collections.Generic.List[object]]::new()
-        foreach ($sku in @($response.value)) {
-            $name = [string]$sku.skuPartNumber
-            if ([string]::IsNullOrWhiteSpace($name)) { continue }
-            $enabled = $null
-            if ($sku.prepaidUnits -and $null -ne $sku.prepaidUnits.enabled) {
-                $enabled = [int]$sku.prepaidUnits.enabled
-            }
-            $consumed = if ($null -ne $sku.consumedUnits) { [int]$sku.consumedUnits } else { $null }
-            $remaining = if ($null -ne $enabled -and $null -ne $consumed) { [Math]::Max(0, $enabled - $consumed) } else { $null }
-            $skuRecord = [PSCustomObject]@{
-                License = $name
-                Used = $consumed
-                Total = $enabled
-                Remaining = $remaining
-            }
-            $skuList.Add($skuRecord) | Out-Null
-            $map[$name.ToUpperInvariant()] = $skuRecord
-            $normalizedName = Normalize-LicenseKey -Name $name
-            if ($normalizedName) {
-                $map[$normalizedName] = $skuRecord
-            }
-            foreach ($plan in @($sku.servicePlans)) {
-                $planName = [string]$plan.servicePlanName
-                if ([string]::IsNullOrWhiteSpace($planName)) { continue }
-                $map[$planName.ToUpperInvariant()] = $skuRecord
-                $normalizedPlanName = Normalize-LicenseKey -Name $planName
-                if ($normalizedPlanName) { $map[$normalizedPlanName] = $skuRecord }
-            }
-        }
-        if ($skuList.Count -eq 0) { throw 'Microsoft Graph subscribedSkus 未返回任何许可证 SKU。' }
-        $result.Success = $true
-        $result.Message = "License 总量已通过 Microsoft Graph subscribedSkus REST API 获取。"
-        $result.Skus = $map
-        $result.SkuList = $skuList.ToArray()
-        return $result
-    } catch {
-        $result.Message = "无法通过 Microsoft Graph 获取 License 总量：$($_.Exception.Message)"
+        Write-Host "无法通过 Microsoft Graph (AuthCode) 获取 License 总量：$($_.Exception.Message)" -ForegroundColor Red
+        $result.Message = "无法通过 Microsoft Graph (AuthCode) 获取 License 总量：$($_.Exception.Message)"
         return $result
     }
 }
@@ -1014,7 +1129,11 @@ function New-ReportSection {
         [bool]$Open = $true
     )
     $openText = if ($Open) { ' open' } else { '' }
-    $noteHtml = if ([string]::IsNullOrWhiteSpace($Note)) { '' } else { '<p class="note">' + (Escape-Html $Note) + '</p>' }
+    $noteHtml = if ([string]::IsNullOrWhiteSpace($Note)) { '' } else { 
+        # 先 HTML 转义，再将 \n 转换为 <br> 实现换行
+        $escapedNote = Escape-Html $Note -replace '\r?\n', '<br>'
+        '<p class="note">' + $escapedNote + '</p>' 
+    }
     $titleKey = "section.$Id.title"
     return @"
   <details class="section" id="$(Escape-Html $Id)"$openText>
@@ -1154,6 +1273,14 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
     }
 }
 
+# ==================== License 产品名称映射（必须在使用前定义）====================
+$licenseProductMap = @{
+    'AAD_PREMIUM_P2_CN' = 'Microsoft Entra ID P2 (中国版)'
+    'POWER_BI_PRO' = 'Power BI Pro'
+    'SPE_E3_NO_WIN' = 'Office 365 E3 (不含Windows)'
+    'EXCHANGEENTPRISE' = 'Exchange Online Enterprise'
+}
+
 # License usage: 优先使用 Microsoft Graph API 获取 License 列表，然后从日志中获取使用量
 $licenseStatusNote = 'License 列表优先使用 Microsoft Graph subscribedSkus 获取（SkuPartNumber 更准确）；使用量优先从 AssignedLicensesDCR_CL 日志获取。'
 
@@ -1190,11 +1317,16 @@ if ($graphLicenseResult.Success) {
         }
     }
     
-    # 固定显示指定的 4 个 License：AAD_PREMIUM_P2_CN、POWER_BI_PRO、SPE_E3_NO_WIN、EXCHANGEENTERPRISE
-    $targetLicenseNames = @('AAD_PREMIUM_P2_CN', 'POWER_BI_PRO', 'SPE_E3_NO_WIN', 'EXCHANGEENTERPRISE')
+    # 固定显示指定的 4 个 License：AAD_PREMIUM_P2_CN、POWER_BI_PRO、SPE_E3_NO_WIN、EXCHANGEENTPRISE
+    $targetLicenseNames = @('AAD_PREMIUM_P2_CN', 'POWER_BI_PRO', 'SPE_E3_NO_WIN', 'EXCHANGEENTPRISE')
+    $targetLicenseNamesNormalized = @($targetLicenseNames | ForEach-Object { Normalize-LicenseKey -Name $_ })
     $licenseUsage = @(
         $graphLicenseResult.SkuList |
-            Where-Object { $targetLicenseNames -contains $_.License } |
+            Where-Object { 
+                $skuName = [string]$_.License
+                $normalizedSkuName = Normalize-LicenseKey -Name $skuName
+                $targetLicenseNames -contains $skuName -or $targetLicenseNamesNormalized -contains $normalizedSkuName
+            } |
             ForEach-Object {
                 $graphSkuName = [string]$_.License
                 $normalizedGraphName = Normalize-LicenseKey -Name $graphSkuName
@@ -1238,69 +1370,107 @@ if ($graphLicenseResult.Success) {
             }
     )
     $licenseStatusNote = "$licenseStatusNote $($graphLicenseResult.Message)"
-} else {
-    # Graph API 失败，回退到日志数据
-    $licenseRows = @($datasets | Where-Object { $_.Table -eq 'AssignedLicensesDCR_CL' } | ForEach-Object { $_.Rows })
-    $licenseGroups = @{}
-    foreach ($row in $licenseRows) {
-        $licenseName = Get-AnyFieldValue -Row $row -Names @('SkuPartNumber', 'LicenseName', 'SkuDisplayName', 'ServicePlanName', 'AssignedLicenses', 'Licenses') -Default 'Unknown License'
-        if (-not $licenseGroups.ContainsKey($licenseName)) {
-            $licenseGroups[$licenseName] = [PSCustomObject]@{
-                Name = $licenseName
-                Users = @{}
-                Rows = 0
-                Total = $null
-                UsedOverride = $null
-            }
-        }
-        $group = $licenseGroups[$licenseName]
-        $group.Rows++
-        $usedUsers = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('UsedUsers', 'Used') -Default '')
-        if ($null -ne $usedUsers) {
-            if ($null -eq $group.UsedOverride -or $usedUsers -gt $group.UsedOverride) {
-                $group.UsedOverride = [int]$usedUsers
-            }
-        }
-        $user = Get-UserValue -Row $row -TableName 'AssignedLicensesDCR_CL'
-        if ($user) { $group.Users[$user.ToLowerInvariant()] = 1 }
-        $total = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('TotalLicenses', 'TotalUnits', 'PrepaidUnitsEnabled', 'SkuPrepaidUnitsEnabled', 'EnabledUnits', 'Enabled') -Default '')
-        if ($null -ne $total) {
-            if ($null -eq $group.Total -or $total -gt $group.Total) { $group.Total = $total }
-        }
-    }
-    $licenseUsage = @(
-        $licenseGroups.Values |
-            Sort-Object @{ Expression = { if ($null -ne $_.UsedOverride) { $_.UsedOverride } else { $_.Users.Count } }; Descending = $true }, @{ Expression = { $_.Rows }; Descending = $true } |
-            Select-Object -First 4 |
-            ForEach-Object {
-                $used = if ($null -ne $_.UsedOverride) { $_.UsedOverride } elseif ($_.Users.Count -gt 0) { $_.Users.Count } else { $_.Rows }
-                $remaining = if ($null -ne $_.Total) { [Math]::Max(0, [int]$_.Total - [int]$used) } else { 'N/A' }
-                [PSCustomObject]@{ License = $_.Name; Used = $used; Total = $(if ($null -ne $_.Total) { [int]$_.Total } else { 'N/A' }); Remaining = $remaining; Source = $(if ($null -ne $_.Total) { 'Log' } else { 'Pending' }) }
-            }
-    )
-    $licenseStatusNote = "$licenseStatusNote Graph API 不可用，已回退到日志数据。$($graphLicenseResult.Message)"
 }
 
-$unresolvedLicenses = @($licenseUsage | Where-Object { Test-LicenseMetricMissing -License $_ })
-if ($licenseUsage.Count -eq 0) {
-    $licenseUsage = @(
-        [PSCustomObject]@{ License = '未识别到 License'; Used = 0; Total = 0; Remaining = 0; Source = 'Unavailable' }
-    )
-    $licenseStatusNote = "$licenseStatusNote 未识别到 License 日志记录，已用 0 填充，避免报告出现 N/A。"
-} elseif ($unresolvedLicenses.Count -gt 0) {
-    $missingNames = ($unresolvedLicenses | ForEach-Object { $_.License } | Sort-Object -Unique) -join ', '
-    foreach ($license in $unresolvedLicenses) {
-        $used = Get-NumberValue $license.Used
-        if ($null -eq $used) { $used = 0 }
-        $license.Used = [int]$used
-        $license.Total = [int]$used
-        $license.Remaining = 0
-        if ([string]::IsNullOrWhiteSpace([string]$license.Source) -or $license.Source -eq 'Pending' -or $license.Source -eq 'Missing') {
-            $license.Source = 'LogOnly-Unverified'
+# ==================== License 数据统计（从 AssignedLicensesDCR_CL 表获取）====================
+# 使用用户指定的 KQL 查询：
+# AssignedLicensesDCR_CL
+# | where ServicePlanName in ("AAD_PREMIUM_P2", "BI_AZURE_P2", "OFFICESUBSCRIPTION", "EXCHANGE_S_ENTERPRISE")
+# | where ProvisioningStatus in ("Success", "PendingInput")
+# | summarize count() by ServicePlanName, ProvisioningStatus
+#
+# 统计逻辑：
+#   - 总数 = ProvisioningStatus in ("Success", "PendingInput") 的总行数
+#   - 已分配 = ProvisioningStatus = "Success" 的行数
+#   - 剩余 = 总数 - 已分配
+
+# 4 个 License 的 ServicePlanName 映射
+$licenseServicePlanMapping = @(
+    [PSCustomObject]@{ LicenseName = 'AAD_PREMIUM_P2_CN'; ServicePlanName = 'AAD_PREMIUM_P2' },
+    [PSCustomObject]@{ LicenseName = 'POWER_BI_PRO'; ServicePlanName = 'BI_AZURE_P2' },
+    [PSCustomObject]@{ LicenseName = 'SPE_E3_NO_WIN'; ServicePlanName = 'OFFICESUBSCRIPTION' },
+    [PSCustomObject]@{ LicenseName = 'EXCHANGEENTPRISE'; ServicePlanName = 'EXCHANGE_S_ENTERPRISE' }
+)
+
+# 从 AssignedLicensesDCR_CL 表统计每个 ServicePlanName 的 License 数量
+$assignedLicenseRows = @($datasets | Where-Object { $_.Table -eq 'AssignedLicensesDCR_CL' } | ForEach-Object { $_.Rows })
+Write-Host "AssignedLicensesDCR_CL 总记录数: $($assignedLicenseRows.Count)" -ForegroundColor Cyan
+
+# 按 ServicePlanName + ProvisioningStatus 分组统计
+$servicePlanStats = @{}
+foreach ($row in $assignedLicenseRows) {
+    $servicePlanName = Get-AnyFieldValue -Row $row -Names @('ServicePlanName', 'ServicePlanName_s') -Default ''
+    if ([string]::IsNullOrWhiteSpace($servicePlanName)) { continue }
+    
+    if (-not $servicePlanStats.ContainsKey($servicePlanName)) {
+        $servicePlanStats[$servicePlanName] = @{
+            TotalCount = 0
+            SuccessCount = 0
         }
     }
-    $licenseStatusNote = "$licenseStatusNote 以下 License 未能通过日志或 Graph 取得总量，已使用日志使用量填充总量下限并将剩余显示为 0，报告不再显示 N/A：$missingNames。"
+    
+    # 使用 EventCount 字段（KQL summarize 时已计算）而不是简单计数
+    $eventCount = Get-NumberValue (Get-AnyFieldValue -Row $row -Names @('EventCount', 'eventcount', 'Count', 'count') -Default '1')
+    
+    # 检查 ProvisioningStatus 字段
+    $provisioningStatus = Get-AnyFieldValue -Row $row -Names @('ProvisioningStatus', 'ProvisioningStatus_s', 'Status') -Default ''
+    
+    # 只统计 ProvisioningStatus in ("Success", "PendingInput") 的记录
+    if ($provisioningStatus -match '(?i)^(success|pendinginput)$') {
+        $servicePlanStats[$servicePlanName].TotalCount += $eventCount
+        
+        # ProvisioningStatus = Success 的为已分配
+        if ($provisioningStatus -match '(?i)^success$') {
+            $servicePlanStats[$servicePlanName].SuccessCount += $eventCount
+        }
+    }
 }
+
+# 输出 ServicePlanName 统计摘要
+Write-Host ''
+Write-Host '=== ServicePlanName 统计摘要 ===' -ForegroundColor Cyan
+foreach ($entry in $servicePlanStats.GetEnumerator() | Sort-Object Key) {
+    Write-Host "  $($entry.Key): Total=$($entry.Value.TotalCount), Success=$($entry.Value.SuccessCount)" -ForegroundColor Gray
+}
+Write-Host '=================================' -ForegroundColor Cyan
+
+# 构建最终的 License 使用数据（永远只显示指定的 4 个 License）
+$licenseUsage = @()
+foreach ($mapping in $licenseServicePlanMapping) {
+    $fixedLicenseName = $mapping.LicenseName
+    $servicePlanName = $mapping.ServicePlanName
+    $stats = if ($servicePlanStats.ContainsKey($servicePlanName)) { $servicePlanStats[$servicePlanName] } else { $null }
+    
+    # 统计逻辑：总数 = ProvisioningStatus in ("Success", "PendingInput") 的 EventCount 之和
+    #           已分配 = ProvisioningStatus = "Success" 的 EventCount 之和
+    #           剩余 = 总数 - 已分配
+    $total = if ($null -ne $stats) { $stats.TotalCount } else { 0 }
+    $used = if ($null -ne $stats) { $stats.SuccessCount } else { 0 }
+    $remaining = [Math]::Max(0, $total - $used)
+    
+    $licenseUsage += [PSCustomObject]@{
+        License = $fixedLicenseName
+        ProductName = $licenseProductMap[$fixedLicenseName]
+        Total = $total
+        Used = $used
+        Remaining = $remaining
+        Source = 'Log'
+    }
+    
+    Write-Host "  License $fixedLicenseName (ServicePlan: $servicePlanName): Total=$total, Used=$used, Remaining=$remaining" -ForegroundColor Gray
+}
+
+$licenseStatusNote = 'License 数据从 AssignedLicensesDCR_CL 日志获取。'
+$licenseStatusNote += "`n查询逻辑：ServicePlanName in (`"AAD_PREMIUM_P2`", `"BI_AZURE_P2`", `"OFFICESUBSCRIPTION`", `"EXCHANGE_S_ENTERPRISE`") | where ProvisioningStatus in (`"Success`", `"PendingInput`")"
+$licenseStatusNote += "`n总数 = 符合条件的总行数，已分配 = ProvisioningStatus=Success 的行数，剩余 = 总数 - 已分配"
+
+# 输出统计摘要
+Write-Host ''
+Write-Host '=== License 统计摘要 ===' -ForegroundColor Cyan
+foreach ($lic in $licenseUsage) {
+    Write-Host "  $($lic.License): Total=$($lic.Total), Used=$($lic.Used), Remaining=$($lic.Remaining), Source=$($lic.Source)" -ForegroundColor White
+}
+Write-Host '========================' -ForegroundColor Cyan
 
 $sharedMailboxRows = [System.Collections.Generic.List[object]]::new()
 $mailboxRows = Get-LatestMailboxRows -Rows @($datasets | Where-Object { $_.Table -eq 'MailboxStatisticsDCR_CL' } | ForEach-Object { $_.Rows })
@@ -1332,7 +1502,10 @@ foreach ($row in $mailboxRows) {
     }
 }
 
-$suspiciousIpRows = Get-SuspiciousIpSlidingWindowRows -Rows @($suspiciousIpRecords | Where-Object { -not (Test-CachedTrustedIp -IP $_.IP -Rules $trustedRules) }) -WindowDays 3 -Threshold 10
+# 解析时间范围用于滑动窗口算法
+$startUtcForWindow = if ($actualStartUtc) { [DateTime]::Parse($actualStartUtc) } else { [DateTime]::MinValue }
+$endUtcForWindow = if ($actualEndUtc) { [DateTime]::Parse($actualEndUtc) } else { [DateTime]::MaxValue }
+$suspiciousIpRows = Get-SuspiciousIpSlidingWindowRows -Rows @($suspiciousIpRecords | Where-Object { -not (Test-CachedTrustedIp -IP $_.IP -Rules $trustedRules) }) -WindowDays 3 -Threshold 10 -StartUtc $startUtcForWindow -EndUtc $endUtcForWindow
 $suspiciousIpSet = @{}
 foreach ($row in $suspiciousIpRows) { $suspiciousIpSet[$row.IP] = 1 }
 $topClientIps = @(
@@ -1466,6 +1639,9 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 $licenseLogic = @"
 AssignedLicensesDCR_CL
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
+| where ServicePlanName in ("AAD_PREMIUM_P2", "BI_AZURE_P2", "OFFICESUBSCRIPTION", "EXCHANGE_S_ENTERPRISE")
+| where ProvisioningStatus in ("Success", "PendingInput")
+| summarize count() by ServicePlanName, ProvisioningStatus
 "@
 
 $permissionKql = @"
@@ -1512,8 +1688,8 @@ $failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml 
     param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
 })
 # 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生时间
-$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '表', '操作者', '操作') -CellBuilder {
-    param($r) @($r.Time, $r.Table, $r.User, $r.Operation)
+$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '操作者', '操作') -CellBuilder {
+    param($r) @($r.Time, $r.User, $r.Operation)
 })
 $suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
@@ -1525,15 +1701,8 @@ $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-T
 $topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
 })
-# License 产品名称映射
-$licenseProductMap = @{
-    'AAD_PREMIUM_P2_CN' = 'Microsoft Entra ID P2 (中国版)'
-    'POWER_BI_PRO' = 'Power BI Pro'
-    'SPE_E3_NO_WIN' = 'Office 365 E3 (不含Windows)'
-    'EXCHANGEENTERPRISE' = 'Exchange Online Enterprise'
-}
 
-# License 状态判断函数
+# ==================== License 状态判断函数
 function Get-LicenseStatus {
     param([int]$Remaining)
     if ($Remaining -eq 0) {
@@ -1570,8 +1739,8 @@ $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $l
 } -RawHtmlColumns @('状态'))
 # 使用与实际查询相同的函数生成KQL，确保报告中显示的KQL可以直接执行
 $sharedMailboxKql = New-MailboxStatisticsOptimizedQuery -StartUtc $actualStartUtc -EndUtc $actualEndUtc
-$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName | Select-Object -First 100) -Columns @('用户名', '邮箱', '类型', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
-    param($r) @($r.DisplayName, $r.EmailAddress, $r.Type, $r.CapacityText, $r.CapacityRisk)
+$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName) -Columns @('用户名', '邮箱', '剩余容量/使用量', '邮箱容量是否风险') -CellBuilder {
+    param($r) @($r.DisplayName, $r.EmailAddress, $r.CapacityText, $r.CapacityRisk)
 })
 # DCRLogErrors 的 KQL 需要反映实际的聚合逻辑
 $dcrLogErrorsKql = @"
@@ -1581,8 +1750,8 @@ DCRLogErrors
 | project TimeGenerated, FirstTime, LastTime, EventCount, InputStreamId, OperationName, Message
 | order by TimeGenerated desc
 "@
-$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('时间', '输入流ID', '操作名称', '消息') -CellBuilder {
-    param($r) @($r.Time, $r.Target, $r.Operation, $r.Detail)
+$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('次数', '时间', '输入流ID', '操作名称', '消息') -CellBuilder {
+    param($r) @($r.Count, $r.Time, $r.Target, $r.Operation, $r.Detail)
 })
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('活动时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) 
@@ -1624,7 +1793,17 @@ $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows (
 })
 
 $sectionSpecs = @(
-    [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = 'Managed Identity 或 Service Principal 登录失败可能表示依赖该身份的服务无法正常运行。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $failedSigninHtml; Open = $true },
+    [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = @"
+Managed Identity / Service Principal 登录失败 → 依赖该身份的服务可能无法运行。
+合并规则：操作者、操作内容、时间戳完全相同才合并。
+
+KQL 仅供参考，实际数据由 PowerShell 处理 CSV：
+• keyence.com.cn 过滤：KQL 用 has 分词匹配，PowerShell 用正则匹配
+• EventCount 阈值：KQL 用 Count > 10，PowerShell 保留 Count > 10
+• 成功登录分类：KQL 仅筛失败；PowerShell 将成功登录归入"可疑成功登录"
+• 聚合字段：KQL 按 6 字段聚合；PowerShell 合并键含更多上下文
+• 结果限制：KQL 取 50 行；PowerShell 取前 50 行，排序可能不同
+"@; Content = $failedSigninHtml; Open = $true },
     [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
     [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
     [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
