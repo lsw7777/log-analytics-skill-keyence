@@ -1298,12 +1298,37 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
 
     foreach ($row in $dataset.Rows) {
         if ($table -eq 'AuditLogs') {
-            $recordKind = Get-AnyFieldValue -Row $row -Names @('__RecordKind') -Default ''
-            if ($recordKind -eq 'DeleteOperation') {
+            # 根据 OperationName 和 AADOperationType 字段自动分类记录类型
+            $operationName = Get-AnyFieldValue -Row $row -Names @('OperationName', 'Operation') -Default ''
+            $aadOpType = Get-AnyFieldValue -Row $row -Names @('AADOperationType') -Default ''
+            $result = Get-AnyFieldValue -Row $row -Names @('Result') -Default ''
+            
+            # 权限变更操作名列表（与 KQL 中的 __isPermissionChange 一致）
+            $permissionChangeOps = @(
+                'Add delegated permission grant',
+                'Consent to application',
+                'Create application – Certificates and secrets management',
+                'Add owner to application',
+                'Add app role assignment to service principal',
+                'Update application – Certificates and secrets management',
+                'Remove delegated permission grant',
+                'Remove app role assignment from service principal'
+            )
+            
+            # 判断是否为删除操作：OperationName 包含 delete/remove/disable 关键词，或 AADOperationType 为 Delete
+            $normalizedOp = $operationName.ToLowerInvariant()
+            $isDeleteOperation = ($aadOpType -eq 'Delete') -or 
+                                 ($normalizedOp -match '(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)')
+            
+            # 判断是否为权限变更操作：Result 为 success 且 OperationName 在权限变更操作名列表中
+            $isPermissionChange = ($result -eq 'success') -and ($operationName -in $permissionChangeOps)
+            
+            if ($isDeleteOperation) {
                 $deleteDisableEvents.Add((New-EventRecord -Table $table -Row $row -Reason '删除操作')) | Out-Null
-            } else {
+            } elseif ($isPermissionChange) {
                 $identityPermissionChanges.Add((New-EventRecord -Table $table -Row $row -Reason '权限变更审计')) | Out-Null
             }
+            # 其他 AuditLogs 记录不添加到任何风险列表，跳过处理
             continue
         }
 

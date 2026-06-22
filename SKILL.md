@@ -1,291 +1,370 @@
 ﻿---
 name: log-analytics-skill
-description: "用于查询 Azure Log Analytics 中的安全相关日志表，生成合并后的风险 HTML 报告。适用于排查登录失败、可疑成功登录、Service Principal 对象和权限变动、许可证使用量、邮箱容量、DCR 采集错误、Intune 审计记录。"
+description: "Azure Log Analytics 安全日志分析 Skill。自动查询 Azure Log Analytics 中的安全相关日志表，生成 HTML 风险报告，并使用 Azure MCP 深入分析高危、中危、低危项，输出 Markdown 格式的详细调查报告。适用于排查登录失败、可疑成功登录、Service Principal 对象和权限变动、许可证使用量、邮箱容量、DCR 采集错误、Intune 审计记录等安全场景。"
 license: 专有
+version: 2.0.0
+author: Keyence IT
+tags:
+  - azure
+  - log-analytics
+  - security
+  - kql
+  - mcp
+  - report
 ---
 
-# Log Analytics 安全风险报告
+# Log Analytics 安全分析 Skill
 
-## 用途
+## 概述
 
-本 skill 从 Azure Log Analytics 查询指定时间范围内的日志数据，并生成一个合并 HTML 风险报告。报告只关注失败、异常、可疑、容量不足、删除、禁用、Service Principal 对象或权限变动、DCR 采集错误、Intune 审计记录等需要处理的信息。
+本 Skill 提供完整的 Azure Log Analytics 安全日志分析能力，包含两个阶段：
 
-脚本目录为 `scripts`，HTML 报告模板已内嵌在 `scripts/generate-html-report.ps1`，可信 IP 配置在 `scripts/config`。根目录只保留这一个 `SKILL.md`。
+1. **HTML 报告生成**：运行 PowerShell 脚本查询指定时间范围内的日志数据，生成合并的 HTML 风险报告
+2. **MCP 深度分析**：使用 Azure MCP 查看对应时间段的日志表数据，分析高危/中危/低危项，使用 KQL 深入调查，输出 Markdown 格式调查报告
 
-## 运行方式
+## 触发条件
 
-### Agent / OpenCode 自然语言启动
+当用户提出以下类型的请求时，应调用本 Skill：
 
-当用户在 OpenCode 或其他支持 Skill 的 Agent 中提出类似下面的自然语言请求时，应直接调用本 skill 的包装脚本，不要再要求用户手动选择时间：
+### 时间范围触发
+- "查询最近N天的微软日志"
+- "生成最近N天的 Log Analytics 风险报告"
+- "查最近N小时的登录风险"
+- "分析上周的日志安全"
+- "last N days log analysis"
 
-```text
-查询最近15天的微软日志
-生成最近7天的 Log Analytics 风险报告
-查最近3小时的登录风险
-```
+### 场景触发
+- "检查登录失败情况"
+- "查看可疑登录"
+- "分析 Service Principal 权限变动"
+- "检查许可证使用情况"
+- "查看 DCR 采集错误"
+- "Intune 审计记录分析"
+- "邮箱容量风险检查"
 
-Agent 应在 skill 根目录执行：
+## 执行流程
+
+### 阶段一：生成 HTML 报告
+
+#### 1. 解析用户输入的时间范围
+
+从用户自然语言中提取时间范围，支持以下格式：
+
+| 用户输入格式 | 解析结果 |
+|-------------|---------|
+| "最近N天" / "近N天" | 最近 N 天 |
+| "last N days" | 最近 N 天 |
+| "最近N小时" / "近N小时" | 最近 N 小时 |
+| "last N hours" | 最近 N 小时 |
+| "上周" | 最近 7 天 |
+| "昨天" | 最近 1 天 |
+| "今天" | 最近 24 小时 |
+
+#### 2. 执行 main.ps1 脚本
+
+在 Skill 根目录执行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-skill.ps1 "查询最近15天的微软日志"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\main.ps1 -Prompt "<用户原始输入>" -SkipTotalCount -NoOpen
 ```
 
-`run-skill.ps1` 会把自然语言传给 `main.ps1 -Prompt`，自动解析 `最近 n 天`、`近 n 天`、`last n days`、`最近 n 小时`、`last n hours`，并默认使用 `-SkipTotalCount -NoOpen`，避免在 Agent 环境中卡在总数预检查或弹出浏览器。脚本结束后会在输出中打印：
+常用参数组合：
 
-```text
+| 场景 | 命令 |
+|------|------|
+| 自然语言查询 | `.\scripts\main.ps1 -Prompt "查询最近15天的微软日志" -SkipTotalCount -NoOpen` |
+| 指定表查询 | `.\scripts\main.ps1 -Prompt "查询最近1天的登录日志" -TableName "SigninLogs" -SkipTotalCount -NoOpen` |
+| 自定义时间 | `.\scripts\main.ps1 -CustomStart "2026-06-10T00:00:00" -CustomEnd "2026-06-10T03:00:00" -SkipTotalCount -NoOpen` |
+| 强制刷新 | `.\scripts\main.ps1 -Prompt "查询最近7天" -ForceRefresh -SkipTotalCount -NoOpen` |
+
+#### 3. 获取报告路径
+
+脚本执行成功后会输出：
+
+```
 HTML: <生成的 HTML 报告完整路径>
 URL: file:///...
 ```
 
-Agent 需要把 `HTML:` 后面的路径明确告诉用户，例如“报告已生成在：...”。
+记录 HTML 报告路径，用于后续阶段。
 
-也可以直接调用 `main.ps1`：
+### 阶段二：MCP 深度分析
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\main.ps1 -Prompt "查询最近15天的微软日志" -SkipTotalCount -NoOpen
+#### 1. 使用 Azure MCP 查询日志表
+
+使用 `use_mcp_tool` 调用 Azure MCP，对每个日志表执行 KQL 查询。
+
+**查询的日志表**：
+- `SigninLogs` - 用户登录日志
+- `AADServicePrincipalSignInLogs` - 服务主体登录日志
+- `AADManagedIdentitySignInLogs` - 托管身份登录日志
+- `AuditLogs` - 审计日志
+- `AssignedLicensesDCR_CL` - 许可证使用
+- `DCRLogErrors` - 采集错误
+- `MailboxStatisticsDCR_CL` - 邮箱统计
+- `IntuneAuditLogsDCR_CL` - Intune 审计日志
+
+**MCP 工具调用示例**：
+
+```json
+{
+  "server_name": "Azure MCP Server",
+  "tool_name": "log-analytics-execute-query",
+  "arguments": {
+    "workspace": "EntraID-workspace",
+    "query": "<KQL 查询语句>",
+    "timespan": "P7D"
+  }
+}
 ```
 
-如果用户明确指定表，可以加 `-TableName`，例如：
+#### 2. 风险等级分类标准
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-skill.ps1 "查询最近1天的登录日志" -TableName "SigninLogs"
+对每个表的记录进行分析，按以下标准分类：
+
+##### 高危 (High Risk)
+| 类别 | 条件 | 表 |
+|------|------|-----|
+| 认证失败风暴 | 单 SP 失败率 > 90% 或失败次数 > 1000 | AADServicePrincipalSignInLogs |
+| 密码暴力尝试 | 单 IP 对多用户尝试登录失败 (ResultType=50126) | SigninLogs |
+| CA 策略阻断 | 被 Conditional Access 策略阻止 (ResultType=53003) | SigninLogs |
+| SP 对象删除 | Service Principal 被删除或硬删除 | AuditLogs |
+| 权限变动 | App Role Assignment 被添加或移除 | AuditLogs |
+| 密钥/证书变动 | 应用证书或密钥被添加/更新/删除 | AuditLogs |
+
+##### 中危 (Medium Risk)
+| 类别 | 条件 | 表 |
+|------|------|-----|
+| 设备认证失败 | 设备认证失败 (ResultType=50155) | SigninLogs |
+| 设备未注册 | 设备未在租户注册 (ResultType=700003) | SigninLogs |
+| 设备被禁用 | 认证时设备被禁用 (ResultType=135011) | SigninLogs |
+| 许可证异常 | 许可证字段缺失或总量为 0 | AssignedLicensesDCR_CL |
+| 采集错误 | DCR 采集失败 | DCRLogErrors |
+| 邮箱容量风险 | 可用空间 < 配额 5% | MailboxStatisticsDCR_CL |
+| Shared Mailbox | 共享邮箱配置 | MailboxStatisticsDCR_CL |
+
+##### 低危 (Low Risk)
+| 类别 | 条件 | 表 |
+|------|------|-----|
+| KMSI 中断 | "保持登录"提示中断 (ResultType=50140) | SigninLogs |
+| 消息提示中断 | 登录时需额外信息 (ResultType=50201) | SigninLogs |
+| 流令牌过期 | 认证流程超时 (ResultType=50089) | SigninLogs |
+| 托管身份登录 | 正常的托管身份登录记录 | AADManagedIdentitySignInLogs |
+
+#### 3. 深入调查
+
+对每个识别出的风险项，使用 KQL 进行深入调查：
+
+**示例 KQL 查询**：
+
+```kusto
+-- 密码暴力尝试调查
+SigninLogs
+| where TimeGenerated > ago(7d) and ResultType == '50126'
+| summarize AttemptCount=count(), FirstAttempt=min(TimeGenerated), LastAttempt=max(TimeGenerated)
+  by UserPrincipalName, IPAddress
+| where AttemptCount >= 3
+| top 20 by AttemptCount desc
+
+-- SP 认证失败调查
+AADServicePrincipalSignInLogs
+| where TimeGenerated > ago(7d)
+  and ServicePrincipalName == 'AIP-DelegatedUser'
+| extend __isFailed = tolower(ResultType) in ('false','fail','failed','1')
+    or (tolower(ResultType) matches regex @"^\d+$" and toint(ResultType) != 0)
+| where __isFailed
+| summarize FailCount=count(), FirstFail=min(TimeGenerated), LastFail=max(TimeGenerated),
+  SampleResult=take_any(ResultDescription)
+  by IPAddress
+
+-- CA 策略阻断调查
+SigninLogs
+| where TimeGenerated > ago(7d) and ResultType == '53003'
+| summarize BlockCount=count(), LastBlock=max(TimeGenerated)
+  by UserPrincipalName, AppDisplayName, IPAddress
+| top 20 by BlockCount desc
 ```
 
-### 手工启动
+#### 4. 生成 Markdown 调查报告
 
-在 skill 根目录运行：
+将调查结果写入 Markdown 文档，保存到 `mcp分析结果/` 目录。
 
-```powershell
-.\scripts\main.ps1
+**文件命名规则**：
+```
+Log-Analytics-<时间范围描述>-风险分析报告.md
 ```
 
-脚本会提示输入时间范围：
+**示例文件名**：
+- `Log-Analytics-上周日志风险分析报告.md`
+- `Log-Analytics-最近7天风险分析报告.md`
+- `Log-Analytics-20260615-20260622风险分析报告.md`
 
-```text
-0 = 最近 3 小时，用于测试
-1 = 最近 1 天
-n = 最近 n 天，最大 90 天
+**报告模板结构**：
+
+```markdown
+# Log Analytics <时间范围>风险分析报告
+
+> **工作区**: <workspace名称> (<workspace_id>)
+> **订阅**: <subscription_name> (<subscription_id>)
+> **时间范围**: <开始日期> ~ <结束日期> (N天)
+> **生成时间**: <生成时间>
+
+---
+
+## 总览
+
+| 表名 | 记录数 | 高危 | 中危 | 低危 |
+|------|--------|------|------|------|
+| SigninLogs | ... | ... | ... | ... |
+| AADServicePrincipalSignInLogs | ... | ... | ... | ... |
+| ... | ... | ... | ... | ... |
+
+---
+
+## 1. SigninLogs (N 条)
+
+**总量**: N | **失败**: N (X%) | **成功**: N
+
+### 每日趋势
+
+| 日期 | 总登录 | 失败数 |
+|------|--------|--------|
+| ... | ... | ... |
+
+### 高危项
+
+#### 1.1 <风险描述>
+
+<详细说明>
+
+| 用户 | 应用 | IP | 次数 | 最后时间 |
+|------|------|-----|------|----------|
+| ... | ... | ... | ... | ... |
+
+**深入调查 KQL**:
+```kusto
+<KQL 查询语句>
 ```
 
-常用参数：
+### 中危项
 
-```powershell
-.\scripts\main.ps1 -TableName "SigninLogs" -CustomStart "2026-06-10T00:00:00" -CustomEnd "2026-06-10T03:00:00"
-.\scripts\main.ps1 -StartDate "2026-06-01" -EndDate "2026-06-03"
-.\scripts\main.ps1 -ForceRefresh
-.\scripts\main.ps1 -NoRiskFilter
+...
+
+### 低危项
+
+...
+
+---
+
+## 风险汇总与处置建议
+
+### 高危 (需立即处理)
+
+| # | 问题 | 表 | 建议 |
+|---|------|-----|------|
+| 1 | ... | ... | ... |
+
+### 中危 (需关注)
+
+| # | 问题 | 表 | 建议 |
+|---|------|-----|------|
+| 1 | ... | ... | ... |
+
+### 低危 (可观察)
+
+| # | 问题 | 表 | 建议 |
+|---|------|-----|------|
+| 1 | ... | ... | ... |
 ```
+
+## 脚本说明
+
+### 核心脚本
+
+| 脚本 | 用途 |
+|------|------|
+| `scripts/main.ps1` | 主入口脚本，负责时间范围解析、缓存管理、查询调度和报告生成 |
+| `scripts/query-log-analytics.ps1` | 执行 Azure Log Analytics KQL 查询 |
+| `scripts/log-analyzer-shared.ps1` | 共享函数库：表清单、时间范围、缓存、可信 IP、KQL 生成、字段解析 |
+| `scripts/generate-html-report.ps1` | 读取 CSV 数据，按风险规则聚合，生成合并 HTML 报告 |
+| `scripts/run-skill.ps1` | Skill 包装脚本，简化 Agent 调用 |
+
+### 可信 IP 配置
+
+可疑 IP 排除规则：
+- `scripts/config/TrustedLocation_KJ.txt` - 可信位置 IP
+- `scripts/config/TrustedLocation_IDC_Ali.txt` - IDC 阿里云 IP
+- Microsoft Service Tags - Azure AD、Power BI、Azure Front Door、Microsoft Defender 等相关公网段
 
 ## 当前默认处理的表
 
-```text
-AADManagedIdentitySignInLogs
-AADServicePrincipalSignInLogs
-AssignedLicensesDCR_CL
-AuditLogs
-DCRLogErrors
-IntuneAuditLogsDCR_CL
-MailboxStatisticsDCR_CL
-SigninLogs
-```
-
-不再默认查询或报告：
-
-```text
-AuditGeneralDCR_CL
-AzureADUsersDCR_CL
-MessageTraceDataDCR_CL
-SharePointAuditDCR_CL
-WQCLogDCR_CL
-```
-
-## 报告关注点
-
-`AADManagedIdentitySignInLogs`：托管身份登录失败，以及可信位置外的成功登录。
-
-`AADServicePrincipalSignInLogs`：服务主体登录失败只展示超过 10 次的聚合记录，并明确展示 `ServicePrincipalName`；同时展示可信位置外的成功登录。
-
-`AssignedLicensesDCR_CL`：统计 4 类许可证名称、已使用数量、总量、剩余数量；日志缺少总量时通过 Microsoft Graph `subscribedSkus` 补齐。
-
-`AuditLogs`：只展示操作者是用户的条目，排除 PIM 噪声；重点关注 Service Principal 对象变动和 app role assignment 权限变动。
-
-`DCRLogErrors`：按最近 30 天的 `InputStreamId`、`OperationName`、`Message` 去重统计采集错误。
-
-`IntuneAuditLogsDCR_CL`：展示所选时间范围内的 Intune 审计记录，兼容自定义日志常见的 `_s` 后缀字段，并按 `Actor`、`Operation`、`Target` 提取。
-
-`MailboxStatisticsDCR_CL`：在查询端保留可用空间低于配额 5% 的异常邮箱，以及字段标识为 SharedMailbox 的邮箱；报告中分别展示邮箱容量风险和 SharedMailbox。
-
-`SigninLogs`：关注失败登录，以及 IP 不在可信位置内且登录应用不属于 `Windows Sign In`、`Microsoft Edge`、`Sangfor SASE VPN`、`Microsoft Office` 的成功登录。可疑 IP 栏只从 `SigninLogs` 产生。
-
-## 可信 IP 规则
-
-可疑 IP 会排除：
-
-```text
-scripts/config/TrustedLocation_KJ.txt
-scripts/config/TrustedLocation_IDC_Ali.txt
-Microsoft Service Tags 中与 Azure AD、Power BI、Azure Front Door、Microsoft Defender、Microsoft Cloud App Security 等相关的公网段
-```
-
-脚本会对日志中的 IP 做标准化，排除私网、回环、链路本地、未指定地址和广播地址。客户端 IP 排行不会包含已经出现在“可疑 IP”栏中的 IP。
-
-## 脚本链路
-
-`scripts/main.ps1` 负责选择时间范围、选择表、管理缓存、调用查询脚本并触发报告生成。
-
-`scripts/query-log-analytics.ps1` 负责登录 Azure China Cloud，并使用 `Invoke-AzOperationalInsightsQuery` 查询 Log Analytics。
-
-`scripts/log-analyzer-shared.ps1` 保存表清单、时间范围、缓存、可信 IP、KQL 生成、字段解析和报告路径等公共逻辑。
-
-`scripts/generate-html-report.ps1` 读取 CSV，按风险规则聚合，生成合并 HTML 报告。
-
-## KQL 模板
-
-下面的 KQL 用于说明当前风险预过滤逻辑。实际执行时，`{StartUtc}`、`{EndUtc}` 和 `{TrustedIpCidrs}` 会由脚本动态替换。
-
-### AADManagedIdentitySignInLogs
-
-```kusto
-let __base =
-AADManagedIdentitySignInLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend ServicePrincipalName = tostring(coalesce(column_ifexists("ServicePrincipalName", ""), column_ifexists("ManagedIdentityName", ""), column_ifexists("Identity", ""), column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalId", ""), column_ifexists("AppId", ""), "Unknown"))
-| extend UserPrincipalName = ServicePrincipalName
-| extend ResourceDisplayName = tostring(coalesce(column_ifexists("ResourceDisplayName", ""), column_ifexists("ResourceIdentity", ""), column_ifexists("ResourceServicePrincipalId", ""), ""))
-| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
-| extend ResultType = tostring(coalesce(column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ResultDescription", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", ""), column_ifexists("ConditionalAccessStatus", ""), ""))
-| extend __status = tolower(ResultType)
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
-| extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
-| extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isPublicUntrustedIp = isnotempty(__ip) and not(ipv4_is_in_any_range(__ip, dynamic({TrustedIpCidrs})));
-let __failed = __base | where __isFailed | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, IPAddress, ResultType, ResultDescription;
-let __suspicious = __base | where __isSuccess and __isPublicUntrustedIp | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultType=take_any(ResultType), ResultDescription=take_any(ResultDescription) by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, IPAddress;
-__failed | union isfuzzy=true __suspicious
-```
-
-### AADServicePrincipalSignInLogs
-
-```kusto
-let __base =
-AADServicePrincipalSignInLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend ServicePrincipalName = tostring(coalesce(column_ifexists("ServicePrincipalName", ""), column_ifexists("AppDisplayName", ""), column_ifexists("ServicePrincipalId", ""), column_ifexists("AppId", ""), "Unknown"))
-| extend UserPrincipalName = ServicePrincipalName
-| extend ResourceDisplayName = tostring(coalesce(column_ifexists("ResourceDisplayName", ""), column_ifexists("ResourceServicePrincipalId", ""), ""))
-| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
-| extend ResultType = tostring(coalesce(column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ResultDescription", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", ""), column_ifexists("ConditionalAccessStatus", ""), ""))
-| extend __status = tolower(ResultType)
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
-| extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
-| extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isPublicUntrustedIp = isnotempty(__ip) and not(ipv4_is_in_any_range(__ip, dynamic({TrustedIpCidrs})));
-let __failed = __base | where __isFailed | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, IPAddress, ResultType, ResultDescription | where EventCount > 10;
-let __suspicious = __base | where __isSuccess and __isPublicUntrustedIp | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultType=take_any(ResultType), ResultDescription=take_any(ResultDescription) by UserPrincipalName, ServicePrincipalName, ResourceDisplayName, IPAddress;
-__failed | union isfuzzy=true __suspicious
-```
-
-### AssignedLicensesDCR_CL
-
-```kusto
-let __base =
-AssignedLicensesDCR_CL
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("UserUPN", ""), column_ifexists("UPN", ""), column_ifexists("Mail", ""), column_ifexists("EmailAddress", ""), column_ifexists("DisplayName", ""), column_ifexists("UserId", "")))
-| extend SkuPartNumber = tostring(coalesce(column_ifexists("SkuPartNumber", ""), column_ifexists("LicenseName", ""), column_ifexists("SkuDisplayName", ""), column_ifexists("ServicePlanName", ""), column_ifexists("AssignedLicenses", ""), column_ifexists("Licenses", ""), "Unknown License"))
-| extend TotalLicenses = todouble(tostring(coalesce(column_ifexists("TotalLicenses", ""), column_ifexists("TotalUnits", ""), column_ifexists("PrepaidUnitsEnabled", ""), column_ifexists("SkuPrepaidUnitsEnabled", ""), column_ifexists("EnabledUnits", ""), column_ifexists("Enabled", ""))));
-__base
-| summarize TimeGenerated=max(TimeGenerated), UsedUsers=dcount(UserPrincipalName), TotalLicenses=max(TotalLicenses) by SkuPartNumber
-```
-
-### AuditLogs
-
-```kusto
-AuditLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend __initiated = tostring(column_ifexists("InitiatedBy", ""))
-| extend __actorUpn = tostring(coalesce(column_ifexists("InitiatedByUserPrincipalName", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("UserPrincipalName", ""), extract(@"""userPrincipalName""\s*:\s*""([^""]+)""", 1, __initiated), ""))
-| extend __actorName = tostring(coalesce(column_ifexists("Actor", ""), column_ifexists("Identity", ""), extract(@"""displayName""\s*:\s*""([^""]+)""", 1, __initiated), ""))
-| extend Actor = iff(isnotempty(__actorName) and isnotempty(__actorUpn) and not(__actorName contains __actorUpn), strcat(__actorName, " / ", __actorUpn), iff(isnotempty(__actorUpn), __actorUpn, __actorName))
-| extend __actorIsUser = isnotempty(__actorUpn) or Actor contains "@" or __initiated contains @"""user"""
-| where __actorIsUser and isnotempty(Actor)
-| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("Activity", ""), column_ifexists("Operation", ""), "Audit Log Event"))
-| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ActivityStatus", ""), ""))
-| extend __pimText = strcat(OperationName, " ", tostring(column_ifexists("ResultReason", "")), " ", tostring(column_ifexists("ResultDescription", "")), " ", tostring(column_ifexists("TargetResources", "")), " ", tostring(column_ifexists("ModifiedProperties", "")))
-| where __pimText !matches regex @"(?i)\bPIM\b|PIM activation expired"
-| extend __isSuccess = tolower(Result) in ("true","success","succeeded","completed","complete","ok","pass","passed","0")
-| extend __isSpObjectChange = __isSuccess and OperationName in~ ("Add service principal", "Remove service principal", "Hard delete service principal")
-| extend __isSpAppRoleChange = __isSuccess and OperationName in~ ("Add app role assignment to service principal", "Remove app role assignment from service principal")
-| where __isSpObjectChange or __isSpAppRoleChange
-| summarize TimeGenerated=max(TimeGenerated), EventCount=count() by Actor, OperationName, Target, PermissionName
-```
-
-### DCRLogErrors
-
-```kusto
-DCRLogErrors
-| where TimeGenerated > ago(30d)
-| distinct InputStreamId, OperationName, Message
-```
-
-### IntuneAuditLogsDCR_CL
-
-```kusto
-IntuneAuditLogsDCR_CL
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend Actor = tostring(coalesce(column_ifexists("ActorUPN", ""), column_ifexists("ActorUserPrincipalName", ""), column_ifexists("Actor", ""), column_ifexists("UserPrincipalName", ""), "Unknown"))
-| extend OperationName = tostring(coalesce(column_ifexists("OperationName", ""), column_ifexists("ActivityDisplayName", ""), column_ifexists("Activity", ""), column_ifexists("Operation", ""), column_ifexists("Action", ""), "Intune Audit Event"))
-| extend TargetDisplayName = tostring(coalesce(column_ifexists("TargetDisplayName", ""), column_ifexists("Target", ""), column_ifexists("ObjectId", ""), column_ifexists("DeviceName", ""), ""))
-| extend Result = tostring(coalesce(column_ifexists("Result", ""), column_ifexists("ResultStatus", ""), column_ifexists("Status", ""), column_ifexists("ActivityResult", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Message", ""), column_ifexists("ErrorMessage", ""), ""))
-| extend __status = tolower(Result)
-| extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
-| extend __isDeleteDisable = tolower(OperationName) matches regex @"(^|[^a-z])(delete|deleted|remove|removed|disable|disabled|deactivate|deactivated)([^a-z]|$)"
-| extend __RecordKind = case(__isDeleteDisable, "AggregatedDeleteDisable", __isFailed, "AggregatedIntuneAuditRisk", "AggregatedIntuneAuditRecord")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by Actor, OperationName, TargetDisplayName, Result, ResultDescription, __RecordKind
-```
-
-### MailboxStatisticsDCR_CL
-
-```kusto
-MailboxStatisticsDCR_CL
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend DisplayName = tostring(coalesce(column_ifexists("DisplayName", ""), column_ifexists("MailboxDisplayName", ""), column_ifexists("Name", ""), ""))
-| extend AvailableSpaceGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("AvailableSpaceGB", ""), column_ifexists("AvailableSpaceInGB", ""), column_ifexists("AvailableSpace", "")))))
-| extend QuotaLimitGB = todouble(extract(@"-?\d+(\.\d+)?", 0, tostring(coalesce(column_ifexists("QuotaLimitGB", ""), column_ifexists("QuotaGB", ""), column_ifexists("StorageQuotaGB", ""), column_ifexists("ProhibitSendReceiveQuotaGB", "")))))
-| extend IsSharedMailbox = tostring(coalesce(column_ifexists("IsSharedMailbox", ""), column_ifexists("IsSharedMailBox", ""), column_ifexists("IsShared", ""), column_ifexists("SharedMailbox", ""), column_ifexists("SharedMailBox", ""), ""))
-| extend RecipientTypeDetails = tostring(coalesce(column_ifexists("RecipientTypeDetails", ""), column_ifexists("RecipientTypeDetail", ""), column_ifexists("RecipientTypeDetails_s", ""), column_ifexists("MailboxRecipientType", ""), column_ifexists("MailboxType", ""), column_ifexists("RecipientType", ""), ""))
-| where (QuotaLimitGB > 0 and AvailableSpaceGB < QuotaLimitGB * 0.05) or RecipientTypeDetails contains "Shared" or IsSharedMailbox in~ ("true", "1", "yes", "y")
-| extend UsagePercent = round((1 - AvailableSpaceGB / QuotaLimitGB) * 100, 2)
-| project TimeGenerated, DisplayName, RecipientTypeDetails, IsSharedMailbox, AvailableSpaceGB, QuotaLimitGB, UsagePercent
-```
-
-### SigninLogs
-
-```kusto
-let __base =
-SigninLogs
-| where TimeGenerated >= datetime({StartUtc}) and TimeGenerated < datetime({EndUtc})
-| extend UserPrincipalName = tostring(coalesce(column_ifexists("UserPrincipalName", ""), column_ifexists("UserDisplayName", ""), column_ifexists("Identity", ""), column_ifexists("UserId", ""), column_ifexists("User", ""), "Unknown"))
-| extend AppDisplayName = tostring(coalesce(column_ifexists("AppDisplayName", ""), column_ifexists("Application", ""), column_ifexists("ApplicationDisplayName", ""), column_ifexists("ClientAppUsed", ""), "Unknown"))
-| extend IPAddress = tostring(coalesce(column_ifexists("IPAddress", ""), column_ifexists("IpAddress", ""), column_ifexists("ClientIP", ""), column_ifexists("ClientIpAddress", ""), ""))
-| extend ResultType = tostring(coalesce(column_ifexists("ResultType", ""), column_ifexists("Status", ""), column_ifexists("ResultDescription", ""), ""))
-| extend ResultDescription = tostring(coalesce(column_ifexists("ResultDescription", ""), column_ifexists("FailureReason", ""), column_ifexists("Status", ""), ""))
-| extend __status = tolower(ResultType)
-| extend __ip = extract(@"(?<!\d)(\d{1,3}(?:\.\d{1,3}){3})(?!\d)", 1, IPAddress)
-| extend __isFailed = (__status in ("false","fail","failed","failure","denied","error","timeout","1") or (__status matches regex @"^\d+$" and toint(__status) != 0) or (tolower(ResultDescription) matches regex @"\b(fail|failed|failure|denied|error|timeout)\b"))
-| extend __isSuccess = (__status in ("true","success","succeeded","completed","complete","ok","pass","passed","0"))
-| extend __isPublicUntrustedIp = isnotempty(__ip) and not(ipv4_is_in_any_range(__ip, dynamic({TrustedIpCidrs})))
-| extend __isSigninSuspiciousSuccess = (__isSuccess and __isPublicUntrustedIp and not(AppDisplayName in~ ("Windows Sign In", "Microsoft Edge", "Sangfor SASE VPN", "Microsoft Office")));
-let __failed = __base | where __isFailed | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, AppDisplayName, IPAddress, ResultType, ResultDescription;
-let __suspicious = __base | where __isSigninSuspiciousSuccess | summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), ResultType=take_any(ResultType), ResultDescription=take_any(ResultDescription) by UserPrincipalName, AppDisplayName, IPAddress;
-__failed | union isfuzzy=true __suspicious
-```
+| 表名 | 说明 | 关注点 |
+|------|------|--------|
+| AADManagedIdentitySignInLogs | 托管身份登录日志 | 登录失败、可信位置外成功登录 |
+| AADServicePrincipalSignInLogs | 服务主体登录日志 | 登录失败(>10次聚合)、可信位置外成功登录 |
+| AssignedLicensesDCR_CL | 许可证使用 | 4类许可证统计、Graph补齐总量 |
+| AuditLogs | 审计日志 | SP对象变动、App Role权限变动、排除PIM噪声 |
+| DCRLogErrors | 采集错误 | 最近30天去重统计 |
+| IntuneAuditLogsDCR_CL | Intune审计日志 | 按Actor/Operation/Target提取 |
+| MailboxStatisticsDCR_CL | 邮箱统计 | 可用空间<5%配额、SharedMailbox |
+| SigninLogs | 用户登录日志 | 失败登录、可疑IP成功登录 |
 
 ## 维护规则
 
-新增表时，需要同时更新 `scripts/log-analyzer-shared.ps1` 的 `$SupportedLogTables`、风险 KQL 生成函数、字段解析规则、报告聚合逻辑，以及本 `SKILL.md` 中的表说明和 KQL 模板。
+1. 新增表时，需同时更新：
+   - `scripts/log-analyzer-shared.ps1` 的 `$SupportedLogTables`
+   - 风险 KQL 生成函数
+   - 字段解析规则
+   - 报告聚合逻辑
+   - 本 `SKILL.md` 中的表说明
 
-修改查询范围、风险条件、字段合并或 HTML 展示规则后，需要运行 `scripts/tests` 下的测试，并优先用最近 3 小时范围验证输出。
+2. 修改查询范围、风险条件、字段合并或 HTML 展示规则后，需运行测试并优先用最近 3 小时范围验证输出
+
+3. 定期更新 `scripts/config/` 下的可信 IP 配置
+
+## 输出产物
+
+| 产物 | 位置 | 说明 |
+|------|------|------|
+| HTML 报告 | `html报告结果/` | 合并的风险 HTML 报告 |
+| HTML 报告（桌面副本） | `~/Desktop/` | 自动复制到用户桌面 |
+| Markdown 报告 | `mcp分析结果/` | MCP 深度分析的 Markdown 调查报告 |
+| Markdown 报告（桌面副本） | `~/Desktop/` | 自动复制到用户桌面 |
+| CSV 缓存 | `scripts/cache/` | 查询结果缓存 |
+
+## 自动复制到桌面
+
+每次生成报告后，Skill 会自动将文件复制到用户桌面，方便用户快速访问：
+
+### 执行步骤
+
+在 HTML 报告和 Markdown 报告生成完成后，执行以下操作：
+
+#### 1. 复制 HTML 报告到桌面
+
+```powershell
+# 获取用户桌面路径
+$desktopPath = [Environment]::GetFolderPath("Desktop")
+
+# 复制 HTML 报告到桌面
+Copy-Item -Path "<html报告路径>" -Destination $desktopPath -Force
+```
+
+#### 2. 复制 Markdown 报告到桌面
+
+```powershell
+# 复制 Markdown 报告到桌面
+Copy-Item -Path "<md报告路径>" -Destination $desktopPath -Force
+```
+
+### 文件命名
+
+复制到桌面的文件保持原文件名：
+- HTML 报告：`final_report_merged_<时间范围>.html`
+- Markdown 报告：`Log-Analytics-<时间范围>-风险分析报告.md`
+
+### 注意事项
+
+- 如果桌面已存在同名文件，会自动覆盖
+- 原始文件仍保留在 `html报告结果/` 和 `mcp分析结果/` 目录中
+- 桌面路径通过 `[Environment]::GetFolderPath("Desktop")` 自动获取，兼容不同系统配置

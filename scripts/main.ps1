@@ -58,9 +58,8 @@ param(
     [switch]$SkipTotalCount,
 
     [Parameter(Mandatory = $false)]
-    [int]$TotalCountTimeoutSec = 30
+    [int]$TotalCountTimeoutSec = 30,
 
-    ,
     [Parameter(Mandatory = $false)]
     [switch]$VerifyLicenseGraph,
 
@@ -74,7 +73,6 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ============================================================
 # CMD 环境检测：如果在 CMD 中运行，自动切换到 PowerShell
 # ============================================================
-# 检测方式：CMD 中运行时 $Host.Name 为 "Default Host" 或为空，且 COMSPEC 指向 cmd.exe
 $hostName = if ($Host -and $Host.Name) { $Host.Name } else { '' }
 $comspec = $env:COMSPEC
 $isCmd = ($hostName -eq 'Default Host' -or $hostName -eq '') -and ($comspec -match 'cmd\.exe$')
@@ -82,10 +80,8 @@ $isCmd = ($hostName -eq 'Default Host' -or $hostName -eq '') -and ($comspec -mat
 if ($isCmd) {
     Write-Host "检测到 CMD 环境，自动启动 PowerShell 执行脚本..." -ForegroundColor Yellow
     
-    # 构建 PowerShell 参数
     $psArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $MyInvocation.MyCommand.Definition)
     
-    # 传递所有原始参数
     foreach ($key in $PSBoundParameters.Keys) {
         $value = $PSBoundParameters[$key]
         if ($value -is [switch]) {
@@ -99,7 +95,6 @@ if ($isCmd) {
         }
     }
     
-    # 启动 PowerShell 并等待完成
     $process = Start-Process -FilePath "powershell.exe" -ArgumentList $psArgs -Wait -PassThru -NoNewWindow
     exit $process.ExitCode
 }
@@ -143,7 +138,6 @@ function Resolve-SkillPromptTimeRange {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Prompt,
-
         [datetime]$Now = (Get-Date)
     )
 
@@ -153,7 +147,7 @@ function Resolve-SkillPromptTimeRange {
     }
 
     $roundedNow = [datetime]::new($Now.Year, $Now.Month, $Now.Day, $Now.Hour, 0, 0)
-    $match = [regex]::Match($text, '(?i)(最近|近|last)\s*(\d{1,2})\s*(天|日|days?|d)')
+    $match = [regex]::Match($text, '(?i)(最近|近|last)\s*(\d{1,2})\s*(天|日|days?|hrs?|h)')
     if ($match.Success) {
         $days = [int]$match.Groups[2].Value
         return Get-RelativeLogTimeRange -Now $roundedNow -Days $days
@@ -373,38 +367,34 @@ foreach ($table in $targetTables) {
     if ($SkipTotalCount) {
         Write-Host "  Total record count skipped (-SkipTotalCount)." -ForegroundColor DarkGray
     } else {
-    try {
-        $totalCountQuery = New-TableTotalCountQuery -TableName $table -StartTime $StartTime -EndTime $EndTime
-        Write-Host "  Getting total record count... (timeout: ${TotalCountTimeoutSec}s; if this is slow, rerun with -SkipTotalCount)" -ForegroundColor DarkGray
-        # Do NOT print the query to avoid exposing IP addresses
-        # Note: Do NOT pass -TableName here, only pass -Query, otherwise the script will 
-        # auto-generate a query based on the table name and ignore our count query
-        $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -QueryTimeoutSec $TotalCountTimeoutSec -ErrorAction Stop 2>&1
-        $exitCode = $LASTEXITCODE
-        Write-Host "  Exit code: $exitCode" -ForegroundColor DarkGray
-        
-        # Parse the output - handle both string and array of objects, and null values
-        $resultString = ''
-        if ($null -eq $totalCountResult) {
-            Write-Host "  Raw result: null" -ForegroundColor DarkGray
-        } elseif ($totalCountResult -is [array]) {
-            Write-Host "  Raw result: array of $($totalCountResult.Count) items" -ForegroundColor DarkGray
-            $resultString = $totalCountResult | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1
-        } else {
-            Write-Host "  Raw result: $($totalCountResult)" -ForegroundColor DarkGray
-            $resultString = $totalCountResult.ToString()
+        try {
+            $totalCountQuery = New-TableTotalCountQuery -TableName $table -StartTime $StartTime -EndTime $EndTime
+            Write-Host "  Getting total record count... (timeout: ${TotalCountTimeoutSec}s; if this is slow, rerun with -SkipTotalCount)" -ForegroundColor DarkGray
+            $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -QueryTimeoutSec $TotalCountTimeoutSec -ErrorAction Stop 2>&1
+            $exitCode = $LASTEXITCODE
+            Write-Host "  Exit code: $exitCode" -ForegroundColor DarkGray
+            
+            $resultString = ''
+            if ($null -eq $totalCountResult) {
+                Write-Host "  Raw result: null" -ForegroundColor DarkGray
+            } elseif ($totalCountResult -is [array]) {
+                Write-Host "  Raw result: array of $($totalCountResult.Count) items" -ForegroundColor DarkGray
+                $resultString = $totalCountResult | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1
+            } else {
+                Write-Host "  Raw result: $($totalCountResult)" -ForegroundColor DarkGray
+                $resultString = $totalCountResult.ToString()
+            }
+            
+            if ($resultString -match '^\d+$') {
+                $totalCount = [int]$resultString
+            }
+            
+            Write-Host "  Parsed total count: $totalCount" -ForegroundColor DarkGray
+        } catch {
+            Write-Host "  Failed to get total count: $_" -ForegroundColor DarkYellow
+            Write-Host "  Continue without total count for $table. You can use -SkipTotalCount to bypass this precheck." -ForegroundColor DarkYellow
+            Write-Host "  Exception type: $($_.Exception.GetType().Name)" -ForegroundColor DarkYellow
         }
-        
-        if ($resultString -match '^\d+$') {
-            $totalCount = [int]$resultString
-        }
-        
-        Write-Host "  Parsed total count: $totalCount" -ForegroundColor DarkGray
-    } catch {
-        Write-Host "  Failed to get total count: $_" -ForegroundColor DarkYellow
-        Write-Host "  Continue without total count for $table. You can use -SkipTotalCount to bypass this precheck." -ForegroundColor DarkYellow
-        Write-Host "  Exception type: $($_.Exception.GetType().Name)" -ForegroundColor DarkYellow
-    }
     }
 
     if ($cacheResult -and $cacheResult.Hit) {
@@ -418,142 +408,54 @@ foreach ($table in $targetTables) {
         }
         Remove-Item -Path $paths.CsvFile -Force -ErrorAction SilentlyContinue
 
-        # AuditLogs 表需要特殊处理：分别查询权限变更和删除操作，然后合并结果
-        if ($table -eq 'AuditLogs' -and -not $NoRiskFilter) {
-            $startUtcStr = $StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-            $endUtcStr = $EndTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
-            
-            # 生成两个独立的 KQL 查询
-            $permissionQuery = New-AuditLogsPermissionChangeQuery -StartUtc $startUtcStr -EndUtc $endUtcStr
-            $deleteQuery = New-AuditLogsDeleteOperationQuery -StartUtc $startUtcStr -EndUtc $endUtcStr
-            
-            $permissionCsv = Join-Path $TempDir "AuditLogs_permission_$AnalysisDateStr.csv"
-            $deleteCsv = Join-Path $TempDir "AuditLogs_delete_$AnalysisDateStr.csv"
-            
-            # 查询权限变更数据
-            Write-Host "  Querying permission changes..." -ForegroundColor DarkGray
-            if ($NoIsolatedQueryProcess) {
-                $queryParams = @{
-                    Query = $permissionQuery
-                    ExportCsv = $permissionCsv
-                    StartTime = $StartTime.ToString('o')
-                    EndTime = $EndTime.ToString('o')
-                }
-                if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
-                & "$ScriptDir\query-log-analytics.ps1" @queryParams
-            } else {
-                $queryArgs = @(
-                    '-NoProfile',
-                    '-ExecutionPolicy', 'Bypass',
-                    '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
-                    '-Query', $permissionQuery,
-                    '-ExportCsv', $permissionCsv,
-                    '-StartTime', $StartTime.ToString('o'),
-                    '-EndTime', $EndTime.ToString('o')
-                )
-                if ($ForceLogin) { $queryArgs += '-ForceLogin' }
-                & powershell.exe @queryArgs
+        if ($NoIsolatedQueryProcess) {
+            $queryParams = @{
+                TableName = $table
+                Hours = $Hours
+                ExportCsv = $paths.CsvFile
+                StartTime = $StartTime.ToString('o')
+                EndTime = $EndTime.ToString('o')
             }
-            
-            # 查询删除操作数据
-            Write-Host "  Querying delete operations..." -ForegroundColor DarkGray
-            if ($NoIsolatedQueryProcess) {
-                $queryParams = @{
-                    Query = $deleteQuery
-                    ExportCsv = $deleteCsv
-                    StartTime = $StartTime.ToString('o')
-                    EndTime = $EndTime.ToString('o')
-                }
-                if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
-                & "$ScriptDir\query-log-analytics.ps1" @queryParams
-            } else {
-                $queryArgs = @(
-                    '-NoProfile',
-                    '-ExecutionPolicy', 'Bypass',
-                    '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
-                    '-Query', $deleteQuery,
-                    '-ExportCsv', $deleteCsv,
-                    '-StartTime', $StartTime.ToString('o'),
-                    '-EndTime', $EndTime.ToString('o')
-                )
-                if ($ForceLogin) { $queryArgs += '-ForceLogin' }
-                & powershell.exe @queryArgs
-            }
-            
-            # 合并两个 CSV 文件
-            $mergedData = [System.Collections.Generic.List[object]]::new()
-            if (Test-Path $permissionCsv) {
-                $permData = Import-Csv -Path $permissionCsv -Encoding UTF8
-                foreach ($row in $permData) {
-                    $row | Add-Member -NotePropertyName '__RecordKind' -NotePropertyValue 'IdentityPermissionChange' -Force
-                    $mergedData.Add($row)
-                }
-                Remove-Item -Path $permissionCsv -Force -ErrorAction SilentlyContinue
-            }
-            if (Test-Path $deleteCsv) {
-                $delData = Import-Csv -Path $deleteCsv -Encoding UTF8
-                foreach ($row in $delData) {
-                    $row | Add-Member -NotePropertyName '__RecordKind' -NotePropertyValue 'DeleteOperation' -Force
-                    $mergedData.Add($row)
-                }
-                Remove-Item -Path $deleteCsv -Force -ErrorAction SilentlyContinue
-            }
-            
-            if ($mergedData.Count -gt 0) {
-                $mergedData | Export-Csv -Path $paths.CsvFile -Encoding UTF8 -NoTypeInformation
-            }
-        } else {
-            if ($NoIsolatedQueryProcess) {
-                $queryParams = @{
-                    TableName = $table
-                    Hours = $Hours
-                    ExportCsv = $paths.CsvFile
-                    StartTime = $StartTime.ToString('o')
-                    EndTime = $EndTime.ToString('o')
-                }
-                if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
-                if (-not $NoRiskFilter) { $queryParams['RiskOnly'] = $true }
+            if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
+            if (-not $NoRiskFilter) { $queryParams['RiskOnly'] = $true }
 
-                & "$ScriptDir\query-log-analytics.ps1" @queryParams
-            } else {
-                $queryArgs = @(
-                    '-NoProfile',
-                    '-ExecutionPolicy', 'Bypass',
-                    '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
-                    '-TableName', $table,
-                    '-Hours', ([string]$Hours),
-                    '-ExportCsv', $paths.CsvFile,
-                    '-StartTime', $StartTime.ToString('o'),
-                    '-EndTime', $EndTime.ToString('o')
-                )
-                if ($ForceLogin) { $queryArgs += '-ForceLogin' }
-                if (-not $NoRiskFilter) { $queryArgs += '-RiskOnly' }
-                & powershell.exe @queryArgs
-                if ($LASTEXITCODE -ne 0) {
-                    if ($LASTEXITCODE -eq 20) {
-                        Write-Host "  Azure PowerShell module conflict detected. Stop querying remaining tables; repair Az modules first." -ForegroundColor Red
-                        break
-                    }
-                    Write-Host "  Query failed for $table (exit code $LASTEXITCODE); skipping this table." -ForegroundColor Yellow
-                    continue
+            & "$ScriptDir\query-log-analytics.ps1" @queryParams
+        } else {
+            $queryArgs = @(
+                '-NoProfile',
+                '-ExecutionPolicy', 'Bypass',
+                '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
+                '-TableName', $table,
+                '-Hours', ([string]$Hours),
+                '-ExportCsv', $paths.CsvFile,
+                '-StartTime', $StartTime.ToString('o'),
+                '-EndTime', $EndTime.ToString('o')
+            )
+            if ($ForceLogin) { $queryArgs += '-ForceLogin' }
+            if (-not $NoRiskFilter) { $queryArgs += '-RiskOnly' }
+            & powershell.exe @queryArgs
+            if ($LASTEXITCODE -ne 0) {
+                if ($LASTEXITCODE -eq 20) {
+                    Write-Host "  Azure PowerShell module conflict detected. Stop querying remaining tables; repair Az modules first." -ForegroundColor Red
+                    break
                 }
+                Write-Host "  Query failed for $table (exit code $LASTEXITCODE); skipping this table." -ForegroundColor Yellow
+                continue
             }
         }
 
-    if (-not (Test-Path $paths.CsvFile)) {
-        # Even if CSV file doesn't exist (filtered count = 0), include the table if total count > 0
-        if ($totalCount -gt 0) {
-            Write-Host "  Query did not generate CSV for $table (filtered=0), but total=$totalCount; including in report." -ForegroundColor Yellow
-            $csvTables.Add($table) | Out-Null
-            $csvTotalCounts.Add($totalCount) | Out-Null
-            # Create an empty CSV with header for report generation
-            'TimeGenerated' | Out-File -FilePath $paths.CsvFile -Encoding UTF8 -Force
-            $csvFiles.Add($paths.CsvFile) | Out-Null
-        } else {
-            Write-Host "  Query did not generate CSV for $table; skipping." -ForegroundColor Yellow
+        if (-not (Test-Path $paths.CsvFile)) {
+            if ($totalCount -gt 0) {
+                Write-Host "  Query did not generate CSV for $table (filtered=0), but total=$totalCount; including in report." -ForegroundColor Yellow
+                $csvTables.Add($table) | Out-Null
+                $csvTotalCounts.Add($totalCount) | Out-Null
+                'TimeGenerated' | Out-File -FilePath $paths.CsvFile -Encoding UTF8 -Force
+                $csvFiles.Add($paths.CsvFile) | Out-Null
+            } else {
+                Write-Host "  Query did not generate CSV for $table; skipping." -ForegroundColor Yellow
+            }
+            continue
         }
-        continue
-    }
         if ($useTableCache) {
             $recordCount = Save-Cache -SourceCsv $paths.CsvFile -CacheCsv $paths.CacheCsv -CacheMeta $paths.CacheMeta -TableName $table -CacheTTL $CacheTTL -StartTime $StartTime -EndTime $EndTime
         }
@@ -585,7 +487,6 @@ if ($csvFiles.Count -eq 0) {
 Write-Host ''
 Write-Host '[2/3] Generating merged HTML report...' -ForegroundColor Yellow
 $analysisStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-# 计算 UTC 时间用于 KQL 语句显示
 $startUtcIso = $StartTime.ToUniversalTime().ToString('o')
 $endUtcIso = $EndTime.ToUniversalTime().ToString('o')
 $htmlParams = @{
@@ -597,7 +498,6 @@ $htmlParams = @{
     StartUtc = $startUtcIso
     EndUtc = $endUtcIso
 }
-# 默认启用 License Graph 验证，除非明确指定 -SkipLicenseGraph
 if ($SkipLicenseGraph) { $htmlParams.SkipLicenseGraph = $true }
 & "$ScriptDir\generate-html-report.ps1" @htmlParams
 $analysisStopwatch.Stop()
