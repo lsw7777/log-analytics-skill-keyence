@@ -418,39 +418,125 @@ foreach ($table in $targetTables) {
         }
         Remove-Item -Path $paths.CsvFile -Force -ErrorAction SilentlyContinue
 
-        if ($NoIsolatedQueryProcess) {
-            $queryParams = @{
-                TableName = $table
-                Hours = $Hours
-                ExportCsv = $paths.CsvFile
-                StartTime = $StartTime.ToString('o')
-                EndTime = $EndTime.ToString('o')
-            }
-            if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
-            if (-not $NoRiskFilter) { $queryParams['RiskOnly'] = $true }
-
-            & "$ScriptDir\query-log-analytics.ps1" @queryParams
-        } else {
-            $queryArgs = @(
-                '-NoProfile',
-                '-ExecutionPolicy', 'Bypass',
-                '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
-                '-TableName', $table,
-                '-Hours', ([string]$Hours),
-                '-ExportCsv', $paths.CsvFile,
-                '-StartTime', $StartTime.ToString('o'),
-                '-EndTime', $EndTime.ToString('o')
-            )
-            if ($ForceLogin) { $queryArgs += '-ForceLogin' }
-            if (-not $NoRiskFilter) { $queryArgs += '-RiskOnly' }
-            & powershell.exe @queryArgs
-            if ($LASTEXITCODE -ne 0) {
-                if ($LASTEXITCODE -eq 20) {
-                    Write-Host "  Azure PowerShell module conflict detected. Stop querying remaining tables; repair Az modules first." -ForegroundColor Red
-                    break
+        # AuditLogs 表需要特殊处理：分别查询权限变更和删除操作，然后合并结果
+        if ($table -eq 'AuditLogs' -and -not $NoRiskFilter) {
+            $startUtcStr = $StartTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $endUtcStr = $EndTime.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            
+            # 生成两个独立的 KQL 查询
+            $permissionQuery = New-AuditLogsPermissionChangeQuery -StartUtc $startUtcStr -EndUtc $endUtcStr
+            $deleteQuery = New-AuditLogsDeleteOperationQuery -StartUtc $startUtcStr -EndUtc $endUtcStr
+            
+            $permissionCsv = Join-Path $TempDir "AuditLogs_permission_$AnalysisDateStr.csv"
+            $deleteCsv = Join-Path $TempDir "AuditLogs_delete_$AnalysisDateStr.csv"
+            
+            # 查询权限变更数据
+            Write-Host "  Querying permission changes..." -ForegroundColor DarkGray
+            if ($NoIsolatedQueryProcess) {
+                $queryParams = @{
+                    Query = $permissionQuery
+                    ExportCsv = $permissionCsv
+                    StartTime = $StartTime.ToString('o')
+                    EndTime = $EndTime.ToString('o')
                 }
-                Write-Host "  Query failed for $table (exit code $LASTEXITCODE); skipping this table." -ForegroundColor Yellow
-                continue
+                if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
+                & "$ScriptDir\query-log-analytics.ps1" @queryParams
+            } else {
+                $queryArgs = @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
+                    '-Query', $permissionQuery,
+                    '-ExportCsv', $permissionCsv,
+                    '-StartTime', $StartTime.ToString('o'),
+                    '-EndTime', $EndTime.ToString('o')
+                )
+                if ($ForceLogin) { $queryArgs += '-ForceLogin' }
+                & powershell.exe @queryArgs
+            }
+            
+            # 查询删除操作数据
+            Write-Host "  Querying delete operations..." -ForegroundColor DarkGray
+            if ($NoIsolatedQueryProcess) {
+                $queryParams = @{
+                    Query = $deleteQuery
+                    ExportCsv = $deleteCsv
+                    StartTime = $StartTime.ToString('o')
+                    EndTime = $EndTime.ToString('o')
+                }
+                if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
+                & "$ScriptDir\query-log-analytics.ps1" @queryParams
+            } else {
+                $queryArgs = @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
+                    '-Query', $deleteQuery,
+                    '-ExportCsv', $deleteCsv,
+                    '-StartTime', $StartTime.ToString('o'),
+                    '-EndTime', $EndTime.ToString('o')
+                )
+                if ($ForceLogin) { $queryArgs += '-ForceLogin' }
+                & powershell.exe @queryArgs
+            }
+            
+            # 合并两个 CSV 文件
+            $mergedData = [System.Collections.Generic.List[object]]::new()
+            if (Test-Path $permissionCsv) {
+                $permData = Import-Csv -Path $permissionCsv -Encoding UTF8
+                foreach ($row in $permData) {
+                    $row | Add-Member -NotePropertyName '__RecordKind' -NotePropertyValue 'IdentityPermissionChange' -Force
+                    $mergedData.Add($row)
+                }
+                Remove-Item -Path $permissionCsv -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path $deleteCsv) {
+                $delData = Import-Csv -Path $deleteCsv -Encoding UTF8
+                foreach ($row in $delData) {
+                    $row | Add-Member -NotePropertyName '__RecordKind' -NotePropertyValue 'DeleteOperation' -Force
+                    $mergedData.Add($row)
+                }
+                Remove-Item -Path $deleteCsv -Force -ErrorAction SilentlyContinue
+            }
+            
+            if ($mergedData.Count -gt 0) {
+                $mergedData | Export-Csv -Path $paths.CsvFile -Encoding UTF8 -NoTypeInformation
+            }
+        } else {
+            if ($NoIsolatedQueryProcess) {
+                $queryParams = @{
+                    TableName = $table
+                    Hours = $Hours
+                    ExportCsv = $paths.CsvFile
+                    StartTime = $StartTime.ToString('o')
+                    EndTime = $EndTime.ToString('o')
+                }
+                if ($ForceLogin) { $queryParams['ForceLogin'] = $true }
+                if (-not $NoRiskFilter) { $queryParams['RiskOnly'] = $true }
+
+                & "$ScriptDir\query-log-analytics.ps1" @queryParams
+            } else {
+                $queryArgs = @(
+                    '-NoProfile',
+                    '-ExecutionPolicy', 'Bypass',
+                    '-File', (Join-Path $ScriptDir 'query-log-analytics.ps1'),
+                    '-TableName', $table,
+                    '-Hours', ([string]$Hours),
+                    '-ExportCsv', $paths.CsvFile,
+                    '-StartTime', $StartTime.ToString('o'),
+                    '-EndTime', $EndTime.ToString('o')
+                )
+                if ($ForceLogin) { $queryArgs += '-ForceLogin' }
+                if (-not $NoRiskFilter) { $queryArgs += '-RiskOnly' }
+                & powershell.exe @queryArgs
+                if ($LASTEXITCODE -ne 0) {
+                    if ($LASTEXITCODE -eq 20) {
+                        Write-Host "  Azure PowerShell module conflict detected. Stop querying remaining tables; repair Az modules first." -ForegroundColor Red
+                        break
+                    }
+                    Write-Host "  Query failed for $table (exit code $LASTEXITCODE); skipping this table." -ForegroundColor Yellow
+                    continue
+                }
             }
         }
 

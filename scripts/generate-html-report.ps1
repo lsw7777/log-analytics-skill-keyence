@@ -1607,20 +1607,10 @@ union withsource=TableName AADManagedIdentitySignInLogs, AADServicePrincipalSign
 $deleteDisableKql = @"
 AuditLogs
 | where TimeGenerated >= datetime($actualStartUtc) and TimeGenerated < datetime($actualEndUtc)
-| extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
-    "Add delegated permission grant",
-    "Consent to application",
-    "Create application – Certificates and secrets management",
-    "Add owner to application",
-    "Add app role assignment to service principal",
-    "Update application – Certificates and secrets management",
-    "Remove delegated permission grant",
-    "Remove app role assignment from service principal"
-)
 | extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
 | where __isDeleteOperation
 | where OperationName !contains "PIM"
-| extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
+| extend __RecordKind = "DeleteOperation"
 | project TimeGenerated, OperationName, AADOperationType, Actor=tostring(InitiatedBy.user.userPrincipalName), Target=tostring(TargetResources), Result, CorrelationId, __RecordKind
 | order by TimeGenerated desc
 "@
@@ -1698,18 +1688,15 @@ AuditLogs
     "Remove delegated permission grant",
     "Remove app role assignment from service principal"
 )
-| extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
-| where __isPermissionChange and not(__isDeleteOperation)
+| where __isPermissionChange
 | where OperationName !contains "PIM"
-| extend __RecordKind = case(__isDeleteOperation, "DeleteOperation", __isPermissionChange, "IdentityPermissionChange", "AuditLogEvent")
 | project TimeGenerated, 
     OperationName, 
     AADOperationType,
     Actor = tostring(InitiatedBy.user.userPrincipalName),
     Target = tostring(TargetResources),
     Result,
-    CorrelationId,
-    __RecordKind
+    CorrelationId
 | order by TimeGenerated desc
 "@
 

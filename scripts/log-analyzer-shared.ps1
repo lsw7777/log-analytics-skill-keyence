@@ -1016,6 +1016,73 @@ AuditLogs
 "@
 }
 
+function New-AuditLogsPermissionChangeQuery {
+    <#
+    .SYNOPSIS
+        生成仅查询应用权限变更的 KQL
+    .DESCRIPTION
+        只查询权限变更操作，不包含删除操作
+    #>
+    param(
+        [string]$StartUtc,
+        [string]$EndUtc
+    )
+
+    return @"
+AuditLogs
+| where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
+| extend __isPermissionChange = tostring(Result) =~ "success" and OperationName in (
+    "Add delegated permission grant",
+    "Consent to application",
+    "Create application – Certificates and secrets management",
+    "Add owner to application",
+    "Add app role assignment to service principal",
+    "Update application – Certificates and secrets management",
+    "Remove delegated permission grant",
+    "Remove app role assignment from service principal"
+)
+| where __isPermissionChange
+| where OperationName !contains "PIM"
+| project TimeGenerated, 
+    OperationName, 
+    AADOperationType,
+    Actor = tostring(InitiatedBy.user.userPrincipalName),
+    Target = tostring(TargetResources),
+    Result,
+    CorrelationId
+| order by TimeGenerated desc
+"@
+}
+
+function New-AuditLogsDeleteOperationQuery {
+    <#
+    .SYNOPSIS
+        生成仅查询删除操作的 KQL
+    .DESCRIPTION
+        只查询删除操作，不包含权限变更操作
+    #>
+    param(
+        [string]$StartUtc,
+        [string]$EndUtc
+    )
+
+    return @"
+AuditLogs
+| where TimeGenerated >= datetime($StartUtc) and TimeGenerated < datetime($EndUtc)
+| extend __isDeleteOperation = tostring(AADOperationType) == "Delete"
+| where __isDeleteOperation
+| where OperationName !contains "PIM"
+| project TimeGenerated, 
+    OperationName, 
+    AADOperationType,
+    Actor = tostring(InitiatedBy.user.userPrincipalName),
+    Target = tostring(TargetResources),
+    Result,
+    CorrelationId
+| order by TimeGenerated desc
+"@
+}
+
 function New-MessageTraceOptimizedQuery {
     param(
         [string]$StartUtc,
