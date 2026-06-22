@@ -427,7 +427,9 @@ function Format-DeleteTargetForReport {
         - Remove/Hard delete service principal: 显示 "服务主体: xxx"
         
         TargetResources JSON 结构示例：
-        [{"id":"xxx","displayName":"用户名","userType":"Member","accountEnabled":true,"groupType":null,"userPrincipalName":"user@keyence.com.cn","mimeType":"metadata","type":"User"}]
+        [{"id":"xxx","displayName":"Is Hard Deleted","userType":"Member","accountEnabled":true,"groupType":null,"userPrincipalName":"user@keyence.com.cn","mimeType":"metadata","type":"User"}]
+        
+        注意：在删除操作中，displayName 字段通常是操作状态（如"Is Hard Deleted"），不是用户名称
     #>
     param(
         [string]$Target,
@@ -455,10 +457,14 @@ function Format-DeleteTargetForReport {
     
     $displayNames = [System.Collections.Generic.List[string]]::new()
     
+    # 无效值列表（displayName 字段可能包含的操作状态）
+    $invalidDisplayNames = @('Is Hard Deleted', 'Is Deleted', 'Deleted', 'Hard Deleted', 'Remove', 'Removed')
+    
     # 根据操作类型优先提取不同字段
     if ($isUserDelete) {
-        # 用户删除：优先 userPrincipalName, displayName
-        $fieldPriority = @('userPrincipalName', 'displayName', 'mail', 'id')
+        # 用户删除：优先 userPrincipalName（邮箱格式），其次 id
+        # 注意：displayName 在删除操作中通常是操作状态（如"Is Hard Deleted"），不是用户名称
+        $fieldPriority = @('userPrincipalName', 'id')
     } elseif ($isDeviceDelete) {
         # 设备删除：优先 displayName, deviceId
         $fieldPriority = @('displayName', 'deviceId', 'devicePhysicalIds', 'id')
@@ -480,7 +486,11 @@ function Format-DeleteTargetForReport {
             $displayName = ''
             foreach ($fieldName in $fieldPriority) {
                 $value = Get-AnyFieldValue -Row $item -Names @($fieldName) -Default ''
-                if ($value) { 
+                if ($value) {
+                    # 对于用户删除，跳过无效的 displayName 值
+                    if ($isUserDelete -and $fieldName -eq 'displayName' -and $value -in $invalidDisplayNames) {
+                        continue
+                    }
                     $displayName = $value
                     break
                 }
@@ -491,6 +501,11 @@ function Format-DeleteTargetForReport {
                     $matchesArr = [regex]::Matches($text, '"' + $fieldName + '"\s*:\s*"([^"]+)"')
                     if ($matchesArr.Count -gt 0) {
                         $displayName = $matchesArr[0].Groups[1].Value
+                        # 对于用户删除，跳过无效的 displayName 值
+                        if ($isUserDelete -and $fieldName -eq 'displayName' -and $displayName -in $invalidDisplayNames) {
+                            $displayName = ''
+                            continue
+                        }
                         break
                     }
                 }
@@ -504,8 +519,13 @@ function Format-DeleteTargetForReport {
         foreach ($fieldName in $fieldPriority) {
             $matchesArr = [regex]::Matches($text, '"' + $fieldName + '"\s*:\s*"([^"]+)"')
             foreach ($match in $matchesArr) {
-                if ($match.Groups[1].Value) { 
-                    $displayNames.Add($match.Groups[1].Value) | Out-Null
+                if ($match.Groups[1].Value) {
+                    $value = $match.Groups[1].Value
+                    # 对于用户删除，跳过无效的 displayName 值
+                    if ($isUserDelete -and $fieldName -eq 'displayName' -and $value -in $invalidDisplayNames) {
+                        continue
+                    }
+                    $displayNames.Add($value) | Out-Null
                 }
             }
         }
@@ -513,16 +533,67 @@ function Format-DeleteTargetForReport {
 
     if ($displayNames.Count -gt 0) {
         $uniqueNames = @($displayNames | Sort-Object -Unique)
-        if ($uniqueNames.Count -le 3) {
-            return $prefix + ($uniqueNames -join ', ')
+        # 对显示名称进行后处理，使输出更简洁易读
+        $formattedNames = @($uniqueNames | ForEach-Object {
+            Format-DeleteTargetDisplayName -DisplayName $_ -Operation $opLower
+        })
+        if ($formattedNames.Count -le 3) {
+            return $prefix + ($formattedNames -join ', ')
         } else {
-            return $prefix + (($uniqueNames | Select-Object -First 3) -join ', ') + " 等$($uniqueNames.Count)个"
+            return $prefix + (($formattedNames | Select-Object -First 3) -join ', ') + " 等$($formattedNames.Count)个"
         }
     }
     
     # 如果没有提取到任何值，返回截断的原始文本
     if ($text.Length -le 80) { return $prefix + $text }
     return $prefix + $text.Substring(0, 80) + '...'
+}
+
+function Format-DeleteTargetDisplayName {
+    <#
+    .SYNOPSIS
+        格式化被删除者的显示名称，使输出更简洁易读
+    .DESCRIPTION
+        对从 TargetResources 提取的显示名称进行后处理：
+        - 对于用户：优先显示标准邮箱格式的用户名（如 zhang.san@keyence.com.cn）
+        - 对于 OID 格式（如 777ad59df6214f0fa67f333438bc9e74TC202021@china.keyence.com.cn），尝试提取 TC 后面的用户ID
+        - 对于设备/应用/服务主体：直接显示 displayName
+    #>
+    param(
+        [string]$DisplayName,
+        [string]$Operation
+    )
+
+    if ([string]::IsNullOrWhiteSpace($DisplayName)) { return '' }
+    
+    $opLower = if ($Operation) { $Operation.ToLowerInvariant() } else { '' }
+    $isUserDelete = $opLower -match 'delete\s+user|remove\s+user'
+    
+    # 对于用户删除，尝试解析各种格式
+    if ($isUserDelete) {
+        # OID 格式：777ad59df6214f0fa67f333438bc9e74TC202021@china.keyence.com.cn
+        # 提取 TC 后面的用户ID部分，如 TC202021
+        if ($DisplayName -match '[0-9a-f]{32}([A-Z]{2}\d+)@') {
+            $userId = $matches[1]
+            return "用户: $userId"
+        }
+        
+        # 如果是标准邮箱格式（如 zhang.san@keyence.com.cn），直接显示
+        if ($DisplayName -match '@') {
+            return $DisplayName
+        }
+        
+        # 如果是 GUID 格式（如 732c874b-0497-464e-a11b-55715833f291），显示为 "用户 (GUID)"
+        if ($DisplayName -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+            return "用户 (GUID: $($DisplayName.Substring(0, 8))...)"
+        }
+        
+        # 其他情况，直接显示
+        return $DisplayName
+    }
+    
+    # 对于非用户删除，直接返回 displayName
+    return $DisplayName
 }
 
 function Format-CompactTextForReport {

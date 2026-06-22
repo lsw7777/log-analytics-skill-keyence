@@ -382,14 +382,17 @@ foreach ($table in $targetTables) {
         $totalCountResult = & "$ScriptDir\query-log-analytics.ps1" -Query $totalCountQuery -StartTime $StartTime.ToString('o') -EndTime $EndTime.ToString('o') -RawCount -NoProfile -QueryTimeoutSec $TotalCountTimeoutSec -ErrorAction Stop 2>&1
         $exitCode = $LASTEXITCODE
         Write-Host "  Exit code: $exitCode" -ForegroundColor DarkGray
-        Write-Host "  Raw result type: $($totalCountResult.GetType().Name)" -ForegroundColor DarkGray
-        Write-Host "  Raw result: $totalCountResult" -ForegroundColor DarkGray
         
-        # Parse the output - handle both string and array of objects
-        $resultString = if ($totalCountResult -is [array]) {
-            $totalCountResult | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1
+        # Parse the output - handle both string and array of objects, and null values
+        $resultString = ''
+        if ($null -eq $totalCountResult) {
+            Write-Host "  Raw result: null" -ForegroundColor DarkGray
+        } elseif ($totalCountResult -is [array]) {
+            Write-Host "  Raw result: array of $($totalCountResult.Count) items" -ForegroundColor DarkGray
+            $resultString = $totalCountResult | ForEach-Object { $_.ToString() } | Where-Object { $_ -match '^\d+$' } | Select-Object -Last 1
         } else {
-            $totalCountResult.ToString()
+            Write-Host "  Raw result: $($totalCountResult)" -ForegroundColor DarkGray
+            $resultString = $totalCountResult.ToString()
         }
         
         if ($resultString -match '^\d+$') {
