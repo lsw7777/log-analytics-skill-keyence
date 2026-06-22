@@ -1734,18 +1734,18 @@ $failedSigninFiltered = @($failedSigninGrouped | Where-Object {
     if ($_.Table -eq 'AADServicePrincipalSignInLogs' -and $_.Count -le 10) { return $false }
     return $true
 })
-$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninFiltered | Select-Object -First 50) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
+$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninFiltered | Select-Object -First 10000) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
 })
 # 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生
-$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 200) -Columns @('时间', '操作者', '操作', '被删除者') -CellBuilder {
+$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 10000) -Columns @('时间', '操作者', '操作', '被删除者') -CellBuilder {
     param($r) @($r.Time, $r.User, $r.Operation, (Format-DeleteTargetForReport -Target $r.Target -Operation $r.Operation))
 })
 $suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
 })
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
+$signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 10000) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
 })
 $topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
@@ -1800,7 +1800,7 @@ DCRLogErrors
 | project TimeGenerated, FirstTime, LastTime, EventCount, InputStreamId, OperationName, Message
 | order by TimeGenerated desc
 "@
-$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('次数', '时间', '输入流ID', '操作名称', '消息') -CellBuilder {
+$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 10000) -Columns @('次数', '时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) @($r.Count, $r.Time, $r.Target, $r.Operation, $r.Detail)
 })
 $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('活动时间', '操作者', '操作', '结果/说明') -CellBuilder {
@@ -1821,7 +1821,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
         }
     }
     
-    @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTargetForReport -Target $r.Target), (Format-CompactTextForReport -Text $permValue -MaxLength 80))
+    @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTextForReport -Text $permValue -MaxLength 80))
 })
 # IntuneAuditLogs 的 KQL 需要反映实际的聚合逻辑
 $intuneAuditKql = @"
@@ -1838,7 +1838,7 @@ IntuneAuditLogsDCR_CL
 | order by TimeGenerated desc
 "@
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 80) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
+$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 10000) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
     param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
 })
 
