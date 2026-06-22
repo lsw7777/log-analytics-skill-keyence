@@ -1522,9 +1522,6 @@ if ($graphLicenseResult.Success) {
 # 注意：上面的代码已经处理了 License 数据的获取和映射
 # 这里不再重复定义 $licenseUsage，避免覆盖上面的修复结果
 $licenseStatusNote = 'License 数据通过 Microsoft Graph PowerShell SDK (Connect-MgGraph -Environment China) 获取。'
-$licenseStatusNote += "`n命令: Connect-MgGraph -Environment China -ClientId `"5bbea6de-1297-488f-aff5-9b55f4c61c3e`" -TenantId `"420c4dab-8603-402f-afe0-75bc28c51c13`""
-$licenseStatusNote += "`n查询: Get-MgSubscribedSku"
-$licenseStatusNote += "`nTotal = PrepaidUnits.Enabled（已购买且活跃）, Used = ConsumedUnits（已分配）, Remaining = Total - Used - Warning - Suspended"
 
 # 输出统计摘要
 Write-Host ''
@@ -1806,7 +1803,7 @@ DCRLogErrors
 $dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 80) -Columns @('次数', '时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) @($r.Count, $r.Time, $r.Target, $r.Operation, $r.Detail)
 })
-$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('活动时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
+$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('活动时间', '操作者', '操作', '结果/说明') -CellBuilder {
     param($r) 
     $permValue = $r.Detail
     
