@@ -768,6 +768,13 @@ function Format-UserForReport {
         if ([string]::IsNullOrWhiteSpace($displayPart) -or $displayPart -match '@') {
             if ($displayNameFromMap) {
                 $displayPart = $displayNameFromMap
+            } else {
+                # 如果 DisplayNameMap 中没有找到，从邮箱地址中提取用户名部分作为显示名称
+                # 例如：c250126@china.keyence.com.cn -> c250126
+                $usernamePart = $emailPart -split '@' | Select-Object -First 1
+                if ($usernamePart) {
+                    $displayPart = $usernamePart
+                }
             }
         }
         
@@ -795,6 +802,15 @@ function Format-UserForReport {
         $email = $match.Value
         $key = $email.ToLowerInvariant()
         $displayName = if ($script:DisplayNameMap.ContainsKey($key)) { $script:DisplayNameMap[$key] } else { '' }
+        
+        # 如果 DisplayNameMap 中没有找到，从邮箱地址中提取用户名部分作为显示名称
+        if (-not $displayName) {
+            $usernamePart = $email -split '@' | Select-Object -First 1
+            if ($usernamePart) {
+                $displayName = $usernamePart
+            }
+        }
+        
         # 检查是否有第二种邮箱格式
         $secondaryEmail = ''
         if ($script:UserEmailMap.ContainsKey($key)) {
