@@ -930,6 +930,9 @@ SigninLogs
 | extend IPAddress = tostring(column_ifexists("IPAddress", ""))
 | extend ResultType = tostring(column_ifexists("ResultType", ""))
 | extend ResultDescription = tostring(column_ifexists("ResultDescription", ""))
+| extend Identity = tostring(column_ifexists("Identity", ""))
+| extend Location = tostring(column_ifexists("Location", ""))
+| extend ClientAppUsed = tostring(column_ifexists("ClientAppUsed", ""))
 | extend UserPrincipalName = iff(isnotempty(UserPrincipalName), UserPrincipalName, iff(isnotempty(UserDisplayName), UserDisplayName, "Unknown"))
 | extend AppDisplayName = iff(isnotempty(AppDisplayName), AppDisplayName, "Unknown")
 | extend __status = tolower(ResultType)
@@ -942,9 +945,9 @@ SigninLogs
 | extend __isSigninSuspiciousSuccess = (__isSuccess and not(__isAllowedApp))
 | where __isFailed or __isSigninSuspiciousSuccess
 | extend __RecordKind=iff(__isFailed, "AggregatedFailedSignin", "AggregatedSuspiciousSigninSuccess")
-| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count() by UserPrincipalName, UserDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription, __RecordKind
+| summarize TimeGenerated=max(TimeGenerated), FirstTime=min(TimeGenerated), LastTime=max(TimeGenerated), EventCount=count(), Identity=any(Identity), Location=any(Location), ClientAppUsed=any(ClientAppUsed) by UserPrincipalName, UserDisplayName, AppDisplayName, IPAddress, ResultType, ResultDescription, __RecordKind
 | extend OperationName=AppDisplayName, Status=ResultType
-| project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, UserDisplayName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, __RecordKind
+| project TimeGenerated, FirstTime, LastTime, EventCount, UserPrincipalName, UserDisplayName, AppDisplayName, OperationName, IPAddress, ResultType, ResultDescription, Status, Identity, Location, ClientAppUsed, __RecordKind
 "@
 }
 
