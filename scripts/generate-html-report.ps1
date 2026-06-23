@@ -315,7 +315,17 @@ function Get-SuspiciousIpSlidingWindowRows {
         }
 
         if ($maxWindowCount -ge $effectiveThreshold) {
-            $result.Add([PSCustomObject]@{ IP = $group.Name; Count = $maxWindowCount }) | Out-Null
+            # 获取该IP的首次和最近访问时间
+            $firstAccess = ($events | Sort-Object TimeValue | Select-Object -First 1).TimeValue
+            $lastAccess = ($events | Sort-Object TimeValue -Descending | Select-Object -First 1).TimeValue
+            $firstAccessStr = if ($firstAccess -ne [DateTime]::MinValue) { $firstAccess.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+            $lastAccessStr = if ($lastAccess -ne [DateTime]::MinValue) { $lastAccess.ToLocalTime().ToString('yyyy-MM-dd HH:mm:ss') } else { '' }
+            $result.Add([PSCustomObject]@{ 
+                IP = $group.Name
+                Count = $maxWindowCount
+                FirstAccess = $firstAccessStr
+                LastAccess = $lastAccessStr
+            }) | Out-Null
         }
     }
 
@@ -1217,13 +1227,131 @@ function Test-LicenseMetricMissing {
     return $false
 }
 
+function Get-RiskLevel {
+    param(
+        [string]$Category,
+        [object]$Row
+    )
+    
+    switch ($Category) {
+        'FailedSignins' {
+            $count = 0
+            if ($Row.PSObject.Properties.Name -contains 'EventCount') { $count = [int]$Row.EventCount }
+            elseif ($Row.PSObject.Properties.Name -contains 'Count') { $count = [int]$Row.Count }
+            if ($count -gt 50) { return 'high' }
+            if ($count -gt 10) { return 'medium' }
+            return 'low'
+        }
+        'SuspiciousIP' {
+            $count = 0
+            if ($Row.PSObject.Properties.Name -contains 'Count') { $count = [int]$Row.Count }
+            if ($count -gt 20) { return 'high' }
+            if ($count -gt 5) { return 'medium' }
+            return 'low'
+        }
+        'SuspiciousSuccess' {
+            $count = 0
+            if ($Row.PSObject.Properties.Name -contains 'Count') { $count = [int]$Row.Count }
+            if ($count -gt 10) { return 'high' }
+            if ($count -gt 3) { return 'medium' }
+            return 'low'
+        }
+        'DeleteDisable' {
+            $op = ''
+            if ($Row.PSObject.Properties.Name -contains 'Operation') { $op = $Row.Operation }
+            if ($op -match 'delete|remove|disable') { return 'high' }
+            return 'medium'
+        }
+        'IdentityPermission' { return 'high' }
+        'MailboxLowSpace' {
+            $usage = 0
+            if ($Row.PSObject.Properties.Name -contains 'Usage') { 
+                $usageStr = [string]$Row.Usage
+                if ($usageStr -match '(\d+)') { $usage = [int]$matches[1] }
+            }
+            if ($usage -gt 95) { return 'high' }
+            if ($usage -gt 85) { return 'medium' }
+            return 'low'
+        }
+        'DcrLogErrors' { return 'medium' }
+        'IntuneAudit' { return 'low' }
+        default { return 'low' }
+    }
+}
+
+function Get-RiskLevelBadge {
+    param([string]$Level)
+    
+    $colorMap = @{
+        'high' = '#dc3545'
+        'medium' = '#ffc107'
+        'low' = '#28a745'
+        'none' = '#6c757d'
+    }
+    $textMap = @{
+        'high' = '高'
+        'medium' = '中'
+        'low' = '低'
+        'none' = '无'
+    }
+    $color = $colorMap[$Level]
+    if (-not $color) { $color = '#6c757d' }
+    $text = $textMap[$Level]
+    if (-not $text) { $text = '低' }
+    return "<span style='background-color: $color; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;'>$text</span>"
+}
+
+function Get-AiAnalysis {
+    param(
+        [string]$Category,
+        [object[]]$Data
+    )
+    
+    $count = ($Data | Measure-Object).Count
+    switch ($Category) {
+        'FailedSignins' {
+            $totalEvents = 0
+            foreach ($d in $Data) { 
+                if ($d.PSObject.Properties.Name -contains 'EventCount') { $totalEvents += [int]$d.EventCount }
+                elseif ($d.PSObject.Properties.Name -contains 'Count') { $totalEvents += [int]$d.Count }
+            }
+            return "检测到 $count 个应用/身份存在登录失败，共计 $totalEvents 次失败事件。主要风险：可能存在暴力破解攻击、凭证泄露或配置错误。建议检查失败原因并采取相应安全措施。"
+        }
+        'SuspiciousIP' {
+            return "检测到 $count 个可疑IP地址尝试访问。主要风险：可能来自恶意来源的未授权访问尝试。建议核实IP来源，必要时添加防火墙规则或加入可信IP列表。"
+        }
+        'SuspiciousSuccess' {
+            return "检测到 $count 个来自非可信位置的成功登录。主要风险：可能是凭证泄露后的异地登录，或用户使用了未授权的网络。建议验证用户身份并确认登录合法性。"
+        }
+        'DeleteDisable' {
+            return "检测到 $count 个删除或禁用操作。主要风险：关键资源被意外或恶意删除/禁用可能导致服务中断。建议审核操作者权限并确认操作合法性。"
+        }
+        'IdentityPermission' {
+            return "检测到 $count 个身份权限变更操作。主要风险：权限提升或不当授权可能导致安全漏洞。建议严格审核权限变更，确保符合最小权限原则。"
+        }
+        'MailboxLowSpace' {
+            return "检测到 $count 个邮箱容量不足。主要风险：邮箱满可能导致邮件丢失或业务中断。建议清理邮箱或增加配额。"
+        }
+        'DcrLogErrors' {
+            return "检测到 $count 个DCR日志错误。主要风险：数据采集规则异常可能导致日志丢失，影响安全监控。建议检查DCR配置和网络连接。"
+        }
+        'IntuneAudit' {
+            return "检测到 $count 个Intune审计记录。主要风险：设备管理变更可能影响终端安全策略。建议审核变更内容确保合规。"
+        }
+        default {
+            return "检测到相关活动，请关注潜在风险。"
+        }
+    }
+}
+
 function New-ReportSection {
     param(
         [string]$Id,
         [string]$Title,
         [string]$Note,
         [string]$Content,
-        [bool]$Open = $true
+        [bool]$Open = $true,
+        [string]$AiAnalysis = ''
     )
     $openText = if ($Open) { ' open' } else { '' }
     $noteHtml = if ([string]::IsNullOrWhiteSpace($Note)) { '' } else { 
@@ -1231,10 +1359,15 @@ function New-ReportSection {
         $escapedNote = Escape-Html $Note -replace '\r?\n', '<br>'
         '<p class="note">' + $escapedNote + '</p>' 
     }
+    $aiAnalysisHtml = ''
+    if (-not [string]::IsNullOrWhiteSpace($AiAnalysis)) {
+        $aiAnalysisHtml = '<div class="ai-analysis"><strong>🤖 AI 分析（主要风险）：</strong>' + (Escape-Html $AiAnalysis) + '</div>'
+    }
     $titleKey = "section.$Id.title"
     return @"
   <details class="section" id="$(Escape-Html $Id)"$openText>
     <summary><span data-i18n="$(Escape-Html $titleKey)">$(Escape-Html $Title)</span></summary>
+    $aiAnalysisHtml
     $noteHtml
     $Content
   </details>
@@ -1377,10 +1510,16 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
         }
 
         if ($table -eq 'SigninLogs' -and $isUsablePublicIp -and -not $isTrustedIp) {
+            $firstTime = Get-AnyFieldValue -Row $row -Names @('FirstTime', 'StartTime', 'MinTime') -Default ''
+            $lastTime = Get-AnyFieldValue -Row $row -Names @('LastTime', 'EndTime', 'MaxTime') -Default ''
+            if (-not $firstTime) { $firstTime = [string]$row.TimeGenerated }
+            if (-not $lastTime) { $lastTime = [string]$row.TimeGenerated }
             $suspiciousIpRecords.Add([PSCustomObject]@{
                 IP = $ip
                 Count = $rowEventCount
                 TimeValue = Get-RowTimeValue -Row $row
+                FirstTime = Get-LocalTimeText -Value $firstTime
+                LastTime = Get-LocalTimeText -Value $lastTime
             }) | Out-Null
         }
 
@@ -1735,20 +1874,34 @@ $failedSigninFiltered = @($failedSigninGrouped | Where-Object {
     if ($_.Table -eq 'AADServicePrincipalSignInLogs' -and $_.Count -le 10) { return $false }
     return $true
 })
-$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninFiltered | Select-Object -First 10000) -Columns @('次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
-    param($r) @($r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
-})
+$failedSigninHtml = (New-CodeBlockHtml -Text $failedSigninKql) + (New-TableHtml -Rows ($failedSigninFiltered | Select-Object -First 10000) -Columns @('风险等级', '次数', '最后时间', 'IP', '主体/应用摘要', '说明') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'FailedSignins' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    @($riskBadge, $r.Count, $r.LastTime, $r.IP, (($r.User, $r.Operation) -join ' / '), $r.Detail)
+} -RawHtmlColumns @('风险等级'))
 # 删除/Disable 操作栏不做任何合并，每条记录独立显示，使用每条记录自己的发生
-$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 10000) -Columns @('时间', '操作者', '操作', '被删除者') -CellBuilder {
-    param($r) @($r.Time, $r.User, $r.Operation, (Format-DeleteTargetForReport -Target $r.Target -Operation $r.Operation))
-})
-$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('IP', '次数') -CellBuilder {
-    param($r) @($r.IP, $r.Count)
-})
+$deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtml -Rows ($deleteDisableEvents | Select-Object -First 10000) -Columns @('风险等级', '时间', '操作者', '操作', '被删除者') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'DeleteDisable' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    @($riskBadge, $r.Time, $r.User, $r.Operation, (Format-DeleteTargetForReport -Target $r.Target -Operation $r.Operation))
+} -RawHtmlColumns @('风险等级'))
+$suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('风险等级', 'IP', '次数', '首次访问时间', '最近访问时间') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'SuspiciousIP' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    $firstAccess = if ($r.PSObject.Properties.Name -contains 'FirstAccess') { $r.FirstAccess } else { '' }
+    $lastAccess = if ($r.PSObject.Properties.Name -contains 'LastAccess') { $r.LastAccess } else { '' }
+    @($riskBadge, $r.IP, $r.Count, $firstAccess, $lastAccess)
+} -RawHtmlColumns @('风险等级'))
 $signinSuspiciousGrouped = Group-EventRecords -Rows $suspiciousSigninSuccess -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 10000) -Columns @('次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
-    param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
-})
+$signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-TableHtml -Rows ($signinSuspiciousGrouped | Select-Object -First 10000) -Columns @('风险等级', '次数', '最后时间', '用户', '应用', 'IP', '说明') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'SuspiciousSuccess' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    @($riskBadge, $r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
+} -RawHtmlColumns @('风险等级'))
 $topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
 })
@@ -1790,9 +1943,12 @@ $licenseHtml = (New-CodeBlockHtml -Text $licenseLogic) + (New-TableHtml -Rows $l
 } -RawHtmlColumns @('状态'))
 # 使用与实际查询相同的函数生成KQL，确保报告中显示的KQL可以直接执行
 $sharedMailboxKql = New-MailboxStatisticsOptimizedQuery -StartUtc $actualStartUtc -EndUtc $actualEndUtc
-$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName) -Columns @('用户名', '邮箱', '剩余容量/总容量', '邮箱容量是否风险') -CellBuilder {
-    param($r) @($r.DisplayName, $r.EmailAddress, $r.CapacityText, $r.CapacityRisk)
-})
+$sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtml -Rows ($sharedMailboxRows | Sort-Object CapacityRiskSort, RemainingSort, DisplayName) -Columns @('风险等级', '用户名', '邮箱', '剩余容量/总容量', '邮箱容量是否风险') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'MailboxLowSpace' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    @($riskBadge, $r.DisplayName, $r.EmailAddress, $r.CapacityText, $r.CapacityRisk)
+} -RawHtmlColumns @('风险等级'))
 # DCRLogErrors 的 KQL 需要反映实际的聚合逻辑
 $dcrLogErrorsKql = @"
 DCRLogErrors
@@ -1801,11 +1957,16 @@ DCRLogErrors
 | project TimeGenerated, FirstTime, LastTime, EventCount, InputStreamId, OperationName, Message
 | order by TimeGenerated desc
 "@
-$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 10000) -Columns @('次数', '时间', '输入流ID', '操作名称', '消息') -CellBuilder {
-    param($r) @($r.Count, $r.Time, $r.Target, $r.Operation, $r.Detail)
-})
-$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('活动时间', '操作者', '操作', '结果/说明') -CellBuilder {
+$dcrLogErrorHtml = (New-CodeBlockHtml -Text $dcrLogErrorsKql) + (New-TableHtml -Rows ($dcrLogErrorRows | Select-Object -First 10000) -Columns @('风险等级', '次数', '时间', '输入流ID', '操作名称', '消息') -CellBuilder {
     param($r) 
+    $riskLevel = Get-RiskLevel -Category 'DcrLogErrors' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    @($riskBadge, $r.Count, $r.Time, $r.Target, $r.Operation, $r.Detail)
+} -RawHtmlColumns @('风险等级'))
+$permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Rows ($identityPermissionChanges | Sort-Object -Property ActivityDateTime -Descending) -Columns @('风险等级', '活动时间', '操作者', '操作', '结果/说明') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'IdentityPermission' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
     $permValue = $r.Detail
     
     # 如果 Detail 看起来像 GUID，回退到 PermissionName
@@ -1822,8 +1983,8 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
         }
     }
     
-    @($r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTextForReport -Text $permValue -MaxLength 80))
-})
+    @($riskBadge, $r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTextForReport -Text $permValue -MaxLength 80))
+} -RawHtmlColumns @('风险等级'))
 # IntuneAuditLogs 的 KQL 需要反映实际的聚合逻辑
 $intuneAuditKql = @"
 IntuneAuditLogsDCR_CL
@@ -1839,9 +2000,12 @@ IntuneAuditLogsDCR_CL
 | order by TimeGenerated desc
 "@
 $intuneGrouped = Group-EventRecords -Rows $intuneAuditRows -KeyBuilder { param($r) Get-StrictEventMergeKey -Row $r }
-$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 10000) -Columns @('次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
-    param($r) @($r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
-})
+$intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows ($intuneGrouped | Select-Object -First 10000) -Columns @('风险等级', '次数', '最后时间', '操作者', '操作', '目标', '结果/说明') -CellBuilder {
+    param($r) 
+    $riskLevel = Get-RiskLevel -Category 'IntuneAudit' -Row $r
+    $riskBadge = Get-RiskLevelBadge -Level $riskLevel
+    @($riskBadge, $r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
+} -RawHtmlColumns @('风险等级'))
 
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = @"
@@ -1854,15 +2018,15 @@ KQL 仅供参考，实际数据由 PowerShell 处理 CSV：
 • 成功登录分类：KQL 仅筛失败；PowerShell 将成功登录归入"可疑成功登录"
 • 聚合字段：KQL 按 6 字段聚合；PowerShell 合并键含更多上下文
 • 结果限制：KQL 取 50 行；PowerShell 取前 50 行，排序可能不同
-"@; Content = $failedSigninHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true },
-    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true }
+"@; Content = $failedSigninHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'FailedSignins' -Data $failedSigninFiltered },
+    [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IdentityPermission' -Data $identityPermissionChanges },
+    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DeleteDisable' -Data $deleteDisableEvents },
+    [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'SuspiciousSuccess' -Data $signinSuspiciousGrouped },
+    [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'SuspiciousIP' -Data $suspiciousIpRows },
+    [PSCustomObject]@{ Id = 'license'; Title = 'License 使用量与剩余数量'; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true; AiAnalysis = '' },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'MailboxLowSpace' -Data @($sharedMailboxRows | Where-Object { $_.CapacityRisk -eq '是' }) },
+    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DcrLogErrors' -Data $dcrLogErrorRows },
+    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IntuneAudit' -Data $intuneGrouped }
 )
 
 # 定义二级分类目录结构
@@ -1892,7 +2056,7 @@ $sideNavHtml += '</nav>'
 
 $reportSectionsHtml = @(
     foreach ($section in $sectionSpecs) {
-        New-ReportSection -Id $section.Id -Title $section.Title -Note $section.Note -Content $section.Content -Open $section.Open
+        New-ReportSection -Id $section.Id -Title $section.Title -Note $section.Note -Content $section.Content -Open $section.Open -AiAnalysis $section.AiAnalysis
     }
 ) -join "`r`n"
 
@@ -1988,6 +2152,8 @@ td { color: var(--text); }
 .ip-identities { color: var(--muted); font-size: 12px; flex: 1; min-width: 200px; }
 .ip-details { padding: 0 14px 14px; }
 .ip-details .note { margin: 8px 0; }
+.ai-analysis { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 10px 14px; margin: 10px 18px; color: #856404; font-size: 13px; line-height: 1.5; }
+.ai-analysis strong { color: #d63384; }
 @media (max-width: 980px) {
   .layout { display: block; padding: 18px; }
   .side-nav { position: static; max-height: none; margin-bottom: 18px; }
@@ -2067,7 +2233,8 @@ const i18n = {
     'field.产品名称': '产品名称', 'field.总数': '总数', 'field.已分配': '已分配', 'field.剩余': '剩余', 'field.状态': '状态',
     'field.用户名': '用户名', 'field.邮箱': '邮箱', 'field.类型': '类型', 'field.总容量': '总容量', 'field.剩余容量': '剩余容量', 'field.使用率': '使用率', 'field.邮箱容量是否风险': '邮箱容量是否风险',
     'field.输入流ID': '输入流ID', 'field.操作名称': '操作名称', 'field.消息': '消息', 'field.活动时间': '活动时间', 'field.目标': '目标', 'field.权限': '权限',
-    'field.结果_说明': '结果/说明', 'field.总记录数': '总记录数', 'field.筛选后记录数': '筛选后记录数', 'field.CSV': 'CSV', 'field.被删除者': '被删除者'
+    'field.结果_说明': '结果/说明', 'field.总记录数': '总记录数', 'field.筛选后记录数': '筛选后记录数', 'field.CSV': 'CSV', 'field.被删除者': '被删除者',
+    'field.风险等级': '风险等级', 'field.首次访问时间': '首次访问时间', 'field.最近访问时间': '最近访问时间'
   },
   'en-US': {
     'report.title': 'Log Analytics Merged Risk Report',
@@ -2107,7 +2274,8 @@ const i18n = {
     'field.产品名称': 'Product Name', 'field.总数': 'Total', 'field.已分配': 'Assigned', 'field.剩余': 'Remaining', 'field.状态': 'Status',
     'field.用户名': 'User Name', 'field.邮箱': 'Email', 'field.类型': 'Type', 'field.总容量': 'Total Capacity', 'field.剩余容量': 'Remaining Capacity', 'field.使用率': 'Usage', 'field.邮箱容量是否风险': 'Mailbox Capacity Risk',
     'field.输入流ID': 'Input Stream ID', 'field.操作名称': 'Operation Name', 'field.消息': 'Message', 'field.活动时间': 'Activity Time', 'field.目标': 'Target', 'field.权限': 'Permission',
-    'field.结果_说明': 'Result / Description', 'field.总记录数': 'Total Records', 'field.筛选后记录数': 'Filtered Records', 'field.CSV': 'CSV', 'field.被删除者': 'Deleted Target'
+    'field.结果_说明': 'Result / Description', 'field.总记录数': 'Total Records', 'field.筛选后记录数': 'Filtered Records', 'field.CSV': 'CSV', 'field.被删除者': 'Deleted Target',
+    'field.风险等级': 'Risk Level', 'field.首次访问时间': 'First Access Time', 'field.最近访问时间': 'Last Access Time'
   },
   'ja-JP': {
     'report.title': 'Log Analytics 統合リスクレポート',
@@ -2147,7 +2315,8 @@ const i18n = {
     'field.产品名称': '製品名', 'field.总数': '合計', 'field.已分配': '割り当て済み', 'field.剩余': '残数', 'field.状态': '状態',
     'field.用户名': 'ユーザー名', 'field.邮箱': 'メール', 'field.类型': '種類', 'field.总容量': '総容量', 'field.剩余容量': '残容量', 'field.使用率': '使用率', 'field.邮箱容量是否风险': 'メールボックス容量リスク',
     'field.输入流ID': '入力ストリーム ID', 'field.操作名称': '操作名', 'field.消息': 'メッセージ', 'field.活动时间': 'アクティビティ時刻', 'field.目标': '対象', 'field.权限': '権限',
-    'field.结果_说明': '結果 / 説明', 'field.总记录数': '総レコード数', 'field.筛选后记录数': 'フィルター後レコード数', 'field.CSV': 'CSV', 'field.被删除者': '削除対象'
+    'field.结果_说明': '結果 / 説明', 'field.总记录数': '総レコード数', 'field.筛选后记录数': 'フィルター後レコード数', 'field.CSV': 'CSV', 'field.被删除者': '削除対象',
+    'field.风险等级': 'リスクレベル', 'field.首次访问时间': '初回アクセス時刻', 'field.最近访问时间': '最終アクセス時刻'
   }
 };
 function applyLanguage(lang) {
