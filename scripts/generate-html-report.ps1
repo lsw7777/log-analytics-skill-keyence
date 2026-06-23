@@ -377,13 +377,41 @@ function Test-SharedMailboxRow {
 function Get-MailboxDisplayName {
     param([object]$Row)
 
-    return Get-AnyFieldValue -Row $Row -Names @('DisplayName', 'MailboxDisplayName', 'Name', 'Identity', 'UserPrincipalName') -Default 'Unknown'
+    # 直接使用 MailboxStatisticsDCR_CL 查询结果中的 DisplayName 字段
+    # 查询命令 New-MailboxStatisticsOptimizedQuery 已确保返回 DisplayName 字段
+    $displayName = Get-AnyFieldValue -Row $Row -Names @('DisplayName') -Default ''
+    
+    # 如果 DisplayName 存在，直接返回（如 "Shayne Wang 基恩士"）
+    if ($displayName) {
+        return $displayName
+    }
+    
+    # 如果 DisplayName 为空，尝试从 DisplayNameMap 中查找（通过 UserPrincipalName）
+    $upn = Get-AnyFieldValue -Row $Row -Names @('UserPrincipalName') -Default ''
+    if ($upn -and $upn -match '@') {
+        $key = $upn.ToLowerInvariant()
+        if ($script:DisplayNameMap.ContainsKey($key)) {
+            return $script:DisplayNameMap[$key]
+        }
+    }
+    
+    return ''
 }
 
 function Get-MailboxEmailAddress {
     param([object]$Row)
 
-    return Get-AnyFieldValue -Row $Row -Names @('EmailAddress', 'PrimarySmtpAddress', 'Mail', 'WindowsEmailAddress', 'ExternalEmailAddress', 'UserPrincipalName', 'MailboxOwnerUPN') -Default ''
+    # 直接使用 MailboxStatisticsDCR_CL 查询结果中的 UserPrincipalName 字段
+    # 查询命令 New-MailboxStatisticsOptimizedQuery 已确保返回 UserPrincipalName 字段
+    $upn = Get-AnyFieldValue -Row $Row -Names @('UserPrincipalName') -Default ''
+    
+    if ($upn) { return $upn }
+    
+    # 如果没有 UserPrincipalName，尝试其他邮箱字段
+    $primaryEmail = Get-AnyFieldValue -Row $Row -Names @('EmailAddress', 'PrimarySmtpAddress', 'Mail', 'WindowsEmailAddress', 'ExternalEmailAddress', 'MailboxOwnerUPN') -Default ''
+    if ($upn) { return $upn }
+    
+    return ''
 }
 
 function Get-ShortListText {
@@ -710,14 +738,75 @@ function Format-UserForReport {
     param([string]$User)
 
     if ([string]::IsNullOrWhiteSpace($User)) { return 'Unknown' }
-    if ($User -match '\s/\s' -and $User -match '@') { return $User.Trim() }
+    
+    # 处理已经是 "displayName / email" 或 "email / something" 格式的情况
+    if ($User -match '\s/\s') {
+        $parts = $User -split '\s/\s', 2
+        $leftPart = $parts[0].Trim()
+        $rightPart = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+        
+        # 确定哪部分是邮箱，哪部分是显示名称
+        $emailPart = ''
+        $displayPart = ''
+        
+        if ($leftPart -match '@') {
+            $emailPart = $leftPart
+            $displayPart = $rightPart
+        } elseif ($rightPart -match '@') {
+            $emailPart = $rightPart
+            $displayPart = $leftPart
+        } else {
+            # 两部分都不是邮箱格式，直接返回原值
+            return $User.Trim()
+        }
+        
+        # 从邮箱中提取 key 来查找 DisplayName
+        $emailKey = $emailPart.ToLowerInvariant()
+        $displayNameFromMap = if ($script:DisplayNameMap.ContainsKey($emailKey)) { $script:DisplayNameMap[$emailKey] } else { '' }
+        
+        # 如果显示名称为空或看起来像邮箱地址（包含@），使用 DisplayNameMap 中的值
+        if ([string]::IsNullOrWhiteSpace($displayPart) -or $displayPart -match '@') {
+            if ($displayNameFromMap) {
+                $displayPart = $displayNameFromMap
+            }
+        }
+        
+        # 检查是否有第二种邮箱格式
+        $secondaryEmail = ''
+        if ($script:UserEmailMap.ContainsKey($emailKey)) {
+            $secondaryEmail = $script:UserEmailMap[$emailKey].Secondary
+        }
+        
+        # 构建显示格式
+        if ($displayPart -and $secondaryEmail) {
+            return "$displayPart / $emailPart ($secondaryEmail)"
+        } elseif ($displayPart) {
+            return "$displayPart / $emailPart"
+        } elseif ($secondaryEmail) {
+            return "$emailPart ($secondaryEmail)"
+        }
+        return $emailPart
+    }
+    
+    # 处理纯邮箱地址或 "DisplayName" 格式的情况
     $emailPattern = '[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}'
     return [regex]::Replace($User, $emailPattern, {
         param($match)
         $email = $match.Value
         $key = $email.ToLowerInvariant()
-        if ($script:DisplayNameMap.ContainsKey($key)) {
-            return "$($script:DisplayNameMap[$key]) / $email"
+        $displayName = if ($script:DisplayNameMap.ContainsKey($key)) { $script:DisplayNameMap[$key] } else { '' }
+        # 检查是否有第二种邮箱格式
+        $secondaryEmail = ''
+        if ($script:UserEmailMap.ContainsKey($key)) {
+            $secondaryEmail = $script:UserEmailMap[$key].Secondary
+        }
+        # 构建显示格式: DisplayName / PrimaryEmail (SecondaryEmail)
+        if ($displayName -and $secondaryEmail) {
+            return "$displayName / $email ($secondaryEmail)"
+        } elseif ($displayName) {
+            return "$displayName / $email"
+        } elseif ($secondaryEmail) {
+            return "$email ($secondaryEmail)"
         }
         return $email
     }, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
@@ -727,14 +816,47 @@ function Add-DisplayNameFromRow {
     param([object]$Row)
 
     $displayName = Get-AnyFieldValue -Row $Row -Names @('displayName', 'DisplayName', 'UserDisplayName') -Default ''
-    if (-not $displayName) { return }
-    $ids = @(
-        (Get-AnyFieldValue -Row $Row -Names @('userPrincipalName', 'UserPrincipalName', 'UserUPN', 'UPN') -Default ''),
-        (Get-AnyFieldValue -Row $Row -Names @('mail', 'Mail', 'EmailAddress') -Default '')
-    )
-    foreach ($id in $ids) {
-        if ($id -and $id -match '@') {
-            $script:DisplayNameMap[$id.ToLowerInvariant()] = $displayName
+    $isDisplayNameEmail = $displayName -match '@'
+    
+    $upn = Get-AnyFieldValue -Row $Row -Names @('userPrincipalName', 'UserPrincipalName', 'UserUPN', 'UPN') -Default ''
+    $mail = Get-AnyFieldValue -Row $Row -Names @('mail', 'Mail', 'EmailAddress') -Default ''
+    
+    # 记录 DisplayName 映射
+    if ($displayName) {
+        if ($isDisplayNameEmail) {
+            # 如果 displayName 是邮箱地址格式，从邮箱中提取用户名部分作为显示名称
+            # 例如：c250126@china.keyence.com.cn -> c250126
+            $emailKey = $displayName.ToLowerInvariant()
+            $usernamePart = $displayName -split '@' | Select-Object -First 1
+            # 只有当用户名部分不是纯数字时，才用作显示名称（如 c250126 可以用，但 12345 不行）
+            if ($usernamePart -match '[a-zA-Z]') {
+                foreach ($id in @($upn, $mail)) {
+                    if ($id -and $id -match '@') {
+                        $script:DisplayNameMap[$id.ToLowerInvariant()] = $usernamePart
+                    }
+                }
+            }
+        } else {
+            # displayName 不是邮箱地址，直接记录映射
+            foreach ($id in @($upn, $mail)) {
+                if ($id -and $id -match '@') {
+                    $script:DisplayNameMap[$id.ToLowerInvariant()] = $displayName
+                }
+            }
+        }
+    }
+    
+    # 记录两种邮箱格式的映射关系（UPN <-> Mail）
+    if ($upn -and $upn -match '@' -and $mail -and $mail -match '@' -and $upn -ne $mail) {
+        $upnKey = $upn.ToLowerInvariant()
+        $mailKey = $mail.ToLowerInvariant()
+        # 以 UPN 为主键，记录 Secondary（Mail）
+        if (-not $script:UserEmailMap.ContainsKey($upnKey)) {
+            $script:UserEmailMap[$upnKey] = [PSCustomObject]@{ Primary = $upn; Secondary = $mail }
+        }
+        # 以 Mail 为主键，记录 Secondary（UPN）
+        if (-not $script:UserEmailMap.ContainsKey($mailKey)) {
+            $script:UserEmailMap[$mailKey] = [PSCustomObject]@{ Primary = $mail; Secondary = $upn }
         }
     }
 }
@@ -1264,14 +1386,15 @@ function Get-RiskLevel {
         }
         'IdentityPermission' { return 'high' }
         'MailboxLowSpace' {
-            $usage = 0
-            if ($Row.PSObject.Properties.Name -contains 'Usage') { 
-                $usageStr = [string]$Row.Usage
-                if ($usageStr -match '(\d+)') { $usage = [int]$matches[1] }
+            # 根据 CapacityRisk 字段判断风险等级
+            $capacityRisk = ''
+            if ($Row.PSObject.Properties.Name -contains 'CapacityRisk') { 
+                $capacityRisk = [string]$Row.CapacityRisk
             }
-            if ($usage -gt 95) { return 'high' }
-            if ($usage -gt 85) { return 'medium' }
-            return 'low'
+            # 当邮箱容量是否风险为"是"时，风险等级为"中"
+            # 当邮箱容量是否风险为"否"时，风险等级为"无"
+            if ($capacityRisk -eq '是') { return 'medium' }
+            return 'none'
         }
         'DcrLogErrors' { return 'medium' }
         'IntuneAudit' { return 'low' }
@@ -1390,6 +1513,7 @@ for ($i = 0; $i -lt $CsvPath.Count; $i++) {
 
 $script:DisplayNameMap = @{}
 $script:DisabledUserMap = @{}
+$script:UserEmailMap = @{}  # 存储用户的两种邮箱格式: key=主邮箱, value=PSCustomObject(Primary, Secondary)
 foreach ($dataset in $datasets) {
     if ($dataset.Table -eq 'AzureADUsersDCR_CL') {
         foreach ($row in $dataset.Rows) {
@@ -1885,7 +2009,7 @@ $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtm
     param($r) 
     $riskLevel = Get-RiskLevel -Category 'DeleteDisable' -Row $r
     $riskBadge = Get-RiskLevelBadge -Level $riskLevel
-    @($riskBadge, $r.Time, $r.User, $r.Operation, (Format-DeleteTargetForReport -Target $r.Target -Operation $r.Operation))
+    @($riskBadge, $r.Time, (Format-UserForReport -User $r.User), $r.Operation, (Format-DeleteTargetForReport -Target $r.Target -Operation $r.Operation))
 } -RawHtmlColumns @('风险等级'))
 $suspiciousIpHtml = (New-CodeBlockHtml -Text $suspiciousIpKql) + (New-TableHtml -Rows $suspiciousIpRows -Columns @('风险等级', 'IP', '次数', '首次访问时间', '最近访问时间') -CellBuilder {
     param($r) 
@@ -1983,7 +2107,7 @@ $permissionHtml = (New-CodeBlockHtml -Text $permissionKql) + (New-TableHtml -Row
         }
     }
     
-    @($riskBadge, $r.ActivityDateTime, $r.User, $r.Operation, (Format-CompactTextForReport -Text $permValue -MaxLength 80))
+    @($riskBadge, $r.ActivityDateTime, (Format-UserForReport -User $r.User), $r.Operation, (Format-CompactTextForReport -Text $permValue -MaxLength 80))
 } -RawHtmlColumns @('风险等级'))
 # IntuneAuditLogs 的 KQL 需要反映实际的聚合逻辑
 $intuneAuditKql = @"
@@ -2004,20 +2128,13 @@ $intuneHtml = (New-CodeBlockHtml -Text $intuneAuditKql) + (New-TableHtml -Rows (
     param($r) 
     $riskLevel = Get-RiskLevel -Category 'IntuneAudit' -Row $r
     $riskBadge = Get-RiskLevelBadge -Level $riskLevel
-    @($riskBadge, $r.Count, $r.LastTime, $r.User, $r.Operation, $r.Target, $r.Detail)
+    @($riskBadge, $r.Count, $r.LastTime, (Format-UserForReport -User $r.User), $r.Operation, $r.Target, $r.Detail)
 } -RawHtmlColumns @('风险等级'))
 
 $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = @"
 Managed Identity / Service Principal 登录失败 → 依赖该身份的服务可能无法运行。
 合并规则：操作者、操作内容、时间戳完全相同才合并。
-
-KQL 仅供参考，实际数据由 PowerShell 处理 CSV：
-• keyence.com.cn 过滤：KQL 和 PowerShell 均使用子串匹配（KQL contains / PowerShell -like），行为一致
-• EventCount 阈值：KQL 用 Count > 10，PowerShell 保留 Count > 10，行为一致
-• 成功登录分类：KQL 仅筛失败；PowerShell 将成功登录归入"可疑成功登录"
-• 聚合字段：KQL 按 6 字段聚合；PowerShell 合并键含更多上下文
-• 结果限制：KQL 取 50 行；PowerShell 取前 50 行，排序可能不同
 "@; Content = $failedSigninHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'FailedSignins' -Data $failedSigninFiltered },
     [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IdentityPermission' -Data $identityPermissionChanges },
     [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DeleteDisable' -Data $deleteDisableEvents },

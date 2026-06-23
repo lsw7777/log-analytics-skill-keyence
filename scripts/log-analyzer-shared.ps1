@@ -1189,6 +1189,7 @@ MailboxStatisticsDCR_CL
 | where isnotempty(UserPrincipalName)
 | summarize arg_max(TimeGenerated, *) by UserPrincipalName
 | project TimeGenerated, 
+    DisplayName,
     UserPrincipalName,
     RecipientTypeDetails, 
     AvailableSpaceGB, 
