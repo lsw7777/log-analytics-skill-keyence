@@ -241,8 +241,19 @@ function New-TableHtml {
 
 function New-CodeBlockHtml {
     param([string]$Text)
-    return '<details class="kql-block"><summary data-i18n="label.kql">KQL 语句</summary><code>' + (Escape-Html $Text) + '</code></details>'
+    $uniqueId = 'kql-' + ([System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+    return @"
+<div class="kql-copy-wrapper">
+<button class="kql-copy-btn" onclick="copyKqlToClipboard('$uniqueId')" data-i18n="btn.copy" title="复制KQL语句">📋 复制</button>
+</div>
+<details class="kql-block" id="$uniqueId">
+<summary data-i18n="label.kql">KQL 语句</summary>
+<code id="$uniqueId-code">' + (Escape-Html $Text) + '</code>
+</details>
+"@
 }
+
+
 
 function Get-TimeValueForSort {
     param([string]$Value)
@@ -498,13 +509,14 @@ function Format-DeleteTargetForReport {
     $isAppDelete = $opLower -match 'delete\s+application|remove\s+application'
     $isSpDelete = $opLower -match '(hard\s+delete|remove)\s+service\s+principal|delete\s+service\s+principal'
     
-    # 确定显示前缀
-    $prefix = ''
-    if ($isUserDelete) { $prefix = '用户: ' }
-    elseif ($isDeviceDelete) { $prefix = '设备: ' }
-    elseif ($isAppDelete) { $prefix = '应用: ' }
-    elseif ($isSpDelete) { $prefix = '服务主体: ' }
-    else { $prefix = '目标: ' }
+    # 确定显示前缀（i18n key）
+    $prefixI18nKey = ''
+    if ($isUserDelete) { $prefixI18nKey = 'deleteTarget.user' }
+    elseif ($isDeviceDelete) { $prefixI18nKey = 'deleteTarget.device' }
+    elseif ($isAppDelete) { $prefixI18nKey = 'deleteTarget.app' }
+    elseif ($isSpDelete) { $prefixI18nKey = 'deleteTarget.sp' }
+    else { $prefixI18nKey = 'deleteTarget.target' }
+    $prefix = "<span data-i18n='$prefixI18nKey'></span>"
     
     $displayNames = [System.Collections.Generic.List[string]]::new()
     
@@ -1443,6 +1455,12 @@ function Get-RiskLevelBadge {
         'low' = '#28a745'
         'none' = '#6c757d'
     }
+    $i18nKeyMap = @{
+        'high' = 'risk.high'
+        'medium' = 'risk.medium'
+        'low' = 'risk.low'
+        'none' = 'risk.none'
+    }
     $textMap = @{
         'high' = '高'
         'medium' = '中'
@@ -1453,12 +1471,14 @@ function Get-RiskLevelBadge {
     if (-not $color) { $color = '#6c757d' }
     $text = $textMap[$Level]
     if (-not $text) { $text = '低' }
+    $i18nKey = $i18nKeyMap[$Level]
+    if (-not $i18nKey) { $i18nKey = 'risk.low' }
     
-    $badge = "<span style='background-color: $color; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;'>$text</span>"
+    $badge = "<span style='background-color: $color; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;' data-i18n='$i18nKey'>$text</span>"
     
-    # 如果有风险原因，添加到徽章后面
+    # 如果有风险原因（i18n key），添加到徽章后面
     if ($Reason) {
-        $badge += " <span style='color: #666; font-size: 11px; margin-left: 4px;' title='" + (Escape-Html $Reason) + "'>⚠ " + (Escape-Html $Reason) + "</span>"
+        $badge += " <span style='color: #666; font-size: 11px; margin-left: 4px;' data-i18n='" + (Escape-Html $Reason) + "'>⚠ " + (Escape-Html $Reason) + "</span>"
     }
     
     return $badge
@@ -1475,45 +1495,42 @@ function Get-RiskReason {
             $count = 0
             if ($Row.PSObject.Properties.Name -contains 'EventCount') { $count = [int]$Row.EventCount }
             elseif ($Row.PSObject.Properties.Name -contains 'Count') { $count = [int]$Row.Count }
-            if ($count -gt 50) { return '失败次数超过50次' }
-            if ($count -gt 10) { return '失败次数超过10次' }
-            return '存在登录失败记录'
+            if ($count -gt 50) { return 'reason.failedSignins.50' }
+            if ($count -gt 10) { return 'reason.failedSignins.10' }
+            return 'reason.failedSignins.default'
         }
         'SuspiciousIP' {
             $count = 0
             if ($Row.PSObject.Properties.Name -contains 'Count') { $count = [int]$Row.Count }
-            if ($count -gt 20) { return '3天内登录次数超过20次' }
-            if ($count -gt 5) { return '3天内登录次数超过5次' }
-            return '非可信IP登录'
+            if ($count -gt 20) { return 'reason.suspiciousIp.20' }
+            if ($count -gt 5) { return 'reason.suspiciousIp.5' }
+            return 'reason.suspiciousIp.default'
         }
         'SuspiciousSuccess' {
             $count = 0
             if ($Row.PSObject.Properties.Name -contains 'Count') { $count = [int]$Row.Count }
-            $reason = ''
-            if ($Row.PSObject.Properties.Name -contains 'Reason') { $reason = [string]$Row.Reason }
-            if ($count -gt 10) { return "可信位置外成功登录超过10次" }
-            if ($count -gt 3) { return "可信位置外成功登录超过3次" }
-            if ($reason) { return $reason }
-            return '可信位置外成功登录'
+            if ($count -gt 10) { return 'reason.suspiciousSuccess.10' }
+            if ($count -gt 3) { return 'reason.suspiciousSuccess.3' }
+            return 'reason.suspiciousSuccess.default'
         }
         'DeleteDisable' {
             $op = ''
             if ($Row.PSObject.Properties.Name -contains 'Operation') { $op = $Row.Operation }
-            if ($op -match 'delete|remove') { return '执行了删除操作' }
-            if ($op -match 'disable') { return '执行了禁用操作' }
-            return '敏感操作'
+            if ($op -match 'delete|remove') { return 'reason.deleteDisable.delete' }
+            if ($op -match 'disable') { return 'reason.deleteDisable.disable' }
+            return 'reason.deleteDisable.default'
         }
-        'IdentityPermission' { return '权限变更操作' }
+        'IdentityPermission' { return 'reason.identityPermission' }
         'MailboxLowSpace' {
             $capacityRisk = ''
             if ($Row.PSObject.Properties.Name -contains 'CapacityRisk') { 
                 $capacityRisk = [string]$Row.CapacityRisk
             }
-            if ($capacityRisk -eq '是') { return '剩余容量不足5%' }
+            if ($capacityRisk -eq '是') { return 'reason.mailboxLowSpace' }
             return ''
         }
-        'DcrLogErrors' { return '日志采集错误' }
-        'IntuneAudit' { return 'Intune审计记录' }
+        'DcrLogErrors' { return 'reason.dcrLogErrors' }
+        'IntuneAudit' { return 'reason.intuneAudit' }
         default { return '' }
     }
 }
@@ -1525,6 +1542,8 @@ function Get-AiAnalysis {
     )
     
     $count = ($Data | Measure-Object).Count
+    $i18nKey = ''
+    $countPlaceholder = '{0}'
     switch ($Category) {
         'FailedSignins' {
             $totalEvents = 0
@@ -1532,31 +1551,40 @@ function Get-AiAnalysis {
                 if ($d.PSObject.Properties.Name -contains 'EventCount') { $totalEvents += [int]$d.EventCount }
                 elseif ($d.PSObject.Properties.Name -contains 'Count') { $totalEvents += [int]$d.Count }
             }
-            return "检测到 $count 个应用/身份存在登录失败，共计 $totalEvents 次失败事件。主要风险：可能存在暴力破解攻击、凭证泄露或配置错误。建议检查失败原因并采取相应安全措施。"
+            $i18nKey = "ai.FailedSignins"
+            return @{ Key = $i18nKey; Count = $count; TotalEvents = $totalEvents }
         }
         'SuspiciousIP' {
-            return "检测到 $count 个可疑IP地址尝试访问。主要风险：可能来自恶意来源的未授权访问尝试。建议核实IP来源，必要时添加防火墙规则或加入可信IP列表。"
+            $i18nKey = "ai.SuspiciousIP"
+            return @{ Key = $i18nKey; Count = $count }
         }
         'SuspiciousSuccess' {
-            return "检测到 $count 个来自非可信位置的成功登录。主要风险：可能是凭证泄露后的异地登录，或用户使用了未授权的网络。建议验证用户身份并确认登录合法性。"
+            $i18nKey = "ai.SuspiciousSuccess"
+            return @{ Key = $i18nKey; Count = $count }
         }
         'DeleteDisable' {
-            return "检测到 $count 个删除或禁用操作。主要风险：关键资源被意外或恶意删除/禁用可能导致服务中断。建议审核操作者权限并确认操作合法性。"
+            $i18nKey = "ai.DeleteDisable"
+            return @{ Key = $i18nKey; Count = $count }
         }
         'IdentityPermission' {
-            return "检测到 $count 个身份权限变更操作。主要风险：权限提升或不当授权可能导致安全漏洞。建议严格审核权限变更，确保符合最小权限原则。"
+            $i18nKey = "ai.IdentityPermission"
+            return @{ Key = $i18nKey; Count = $count }
         }
         'MailboxLowSpace' {
-            return "检测到 $count 个邮箱容量不足。主要风险：邮箱满可能导致邮件丢失或业务中断。建议清理邮箱或增加配额。"
+            $i18nKey = "ai.MailboxLowSpace"
+            return @{ Key = $i18nKey; Count = $count }
         }
         'DcrLogErrors' {
-            return "检测到 $count 个DCR日志错误。主要风险：数据采集规则异常可能导致日志丢失，影响安全监控。建议检查DCR配置和网络连接。"
+            $i18nKey = "ai.DcrLogErrors"
+            return @{ Key = $i18nKey; Count = $count }
         }
         'IntuneAudit' {
-            return "检测到 $count 个Intune审计记录。主要风险：设备管理变更可能影响终端安全策略。建议审核变更内容确保合规。"
+            $i18nKey = "ai.IntuneAudit"
+            return @{ Key = $i18nKey; Count = $count }
         }
         default {
-            return "检测到相关活动，请关注潜在风险。"
+            $i18nKey = "ai.Default"
+            return @{ Key = $i18nKey; Count = $count }
         }
     }
 }
@@ -1566,19 +1594,31 @@ function New-ReportSection {
         [string]$Id,
         [string]$Title,
         [string]$Note,
+        [string]$NoteI18nKey = '',
         [string]$Content,
         [bool]$Open = $true,
-        [string]$AiAnalysis = ''
+        [object]$AiAnalysis = $null
     )
     $openText = if ($Open) { ' open' } else { '' }
     $noteHtml = if ([string]::IsNullOrWhiteSpace($Note)) { '' } else { 
         # 先 HTML 转义，再将 \n 转换为 <br> 实现换行
         $escapedNote = Escape-Html $Note -replace '\r?\n', '<br>'
-        '<p class="note">' + $escapedNote + '</p>' 
+        if ($NoteI18nKey) {
+            '<p class="note" data-i18n="' + (Escape-Html $NoteI18nKey) + '">' + $escapedNote + '</p>' 
+        } else {
+            '<p class="note">' + $escapedNote + '</p>' 
+        }
     }
     $aiAnalysisHtml = ''
-    if (-not [string]::IsNullOrWhiteSpace($AiAnalysis)) {
-        $aiAnalysisHtml = '<div class="ai-analysis"><strong>🤖 AI 分析（主要风险）：</strong>' + (Escape-Html $AiAnalysis) + '</div>'
+    if ($null -ne $AiAnalysis -and $AiAnalysis -is [hashtable] -and $AiAnalysis.Key) {
+        $aiI18nKey = $AiAnalysis.Key
+        $count = $AiAnalysis.Count
+        $totalEvents = $AiAnalysis.TotalEvents
+        if ($totalEvents) {
+            $aiAnalysisHtml = '<div class="ai-analysis"><strong data-i18n="ai.label">🤖 AI 分析（主要风险）：</strong><span data-i18n="' + (Escape-Html $aiI18nKey) + '" data-i18n-count="' + $count + '" data-i18n-total="' + $totalEvents + '"></span></div>'
+        } else {
+            $aiAnalysisHtml = '<div class="ai-analysis"><strong data-i18n="ai.label">🤖 AI 分析（主要风险）：</strong><span data-i18n="' + (Escape-Html $aiI18nKey) + '" data-i18n-count="' + $count + '"></span></div>'
+        }
     }
     $titleKey = "section.$Id.title"
     return @"
@@ -2252,8 +2292,9 @@ $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtm
     $riskLevel = Get-RiskLevel -Category 'MailboxLowSpace' -Row $r
     $riskReason = Get-RiskReason -Category 'MailboxLowSpace' -Row $r
     $riskBadge = Get-RiskLevelBadge -Level $riskLevel -Reason $riskReason
-    @($riskBadge, $r.DisplayName, $r.EmailAddress, $r.CapacityText, $r.CapacityRisk)
-} -RawHtmlColumns @('风险等级'))
+    $capacityRiskI18n = if ($r.CapacityRisk -eq '是') { "<span data-i18n='mailbox.yes'>是</span>" } else { "<span data-i18n='mailbox.no'>否</span>" }
+    @($riskBadge, $r.DisplayName, $r.EmailAddress, $r.CapacityText, $capacityRiskI18n)
+} -RawHtmlColumns @('风险等级', '邮箱容量是否风险'))
 # DCRLogErrors 的 KQL 需要反映实际的聚合逻辑
 $dcrLogErrorsKql = @"
 DCRLogErrors
@@ -2319,15 +2360,15 @@ $sectionSpecs = @(
     [PSCustomObject]@{ Id = 'failed-signins'; Title = '应用登录失败'; Note = @"
 Managed Identity / Service Principal 登录失败 → 依赖该身份的服务可能无法运行。
 合并规则：操作者、操作内容、时间戳完全相同才合并。
-"@; Content = $failedSigninHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'FailedSignins' -Data $failedSigninFiltered },
-    [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; Content = $permissionHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IdentityPermission' -Data $identityPermissionChanges },
-    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; Content = $deleteDisableHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DeleteDisable' -Data $deleteDisableEvents },
-    [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; Content = $signinSuspiciousHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'SuspiciousSuccess' -Data $signinSuspiciousGrouped },
-    [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; Content = $suspiciousIpHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'SuspiciousIP' -Data $suspiciousIpRows },
-    [PSCustomObject]@{ Id = 'license'; Title = "License 使用量与剩余数量 $licenseOverallRiskBadge"; Note = $licenseStatusNote; Content = $licenseHtml; Open = $true; AiAnalysis = '' },
-    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; Content = $sharedMailboxHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'MailboxLowSpace' -Data @($sharedMailboxRows | Where-Object { $_.CapacityRisk -eq '是' }) },
-    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; Content = $dcrLogErrorHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DcrLogErrors' -Data $dcrLogErrorRows },
-    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; Content = $intuneHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IntuneAudit' -Data $intuneGrouped }
+"@; NoteI18nKey = 'note.failed-signins'; Content = $failedSigninHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'FailedSignins' -Data $failedSigninFiltered },
+    [PSCustomObject]@{ Id = 'identity-permission'; Title = '应用权限变更'; Note = '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。'; NoteI18nKey = 'note.identity-permission'; Content = $permissionHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IdentityPermission' -Data $identityPermissionChanges },
+    [PSCustomObject]@{ Id = 'delete-disable'; Title = '删除操作'; Note = '只统计 delete 语义的操作；每条记录独立显示，不做合并。'; NoteI18nKey = 'note.delete-disable'; Content = $deleteDisableHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DeleteDisable' -Data $deleteDisableEvents },
+    [PSCustomObject]@{ Id = 'suspicious-success'; Title = '可疑成功登录'; Note = '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。'; NoteI18nKey = 'note.suspicious-success'; Content = $signinSuspiciousHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'SuspiciousSuccess' -Data $signinSuspiciousGrouped },
+    [PSCustomObject]@{ Id = 'suspicious-ip'; Title = '可疑 IP'; Note = "仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP，$microsoftTrustedNote"; NoteI18nKey = 'note.suspicious-ip'; Content = $suspiciousIpHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'SuspiciousIP' -Data $suspiciousIpRows },
+    [PSCustomObject]@{ Id = 'license'; Title = "License 使用量与剩余数量 $licenseOverallRiskBadge"; Note = $licenseStatusNote; NoteI18nKey = 'note.license'; Content = $licenseHtml; Open = $true; AiAnalysis = '' },
+    [PSCustomObject]@{ Id = 'shared-mailbox'; Title = 'SharedMailbox'; Note = "显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足5%的邮箱视为有风险，有风险的邮箱排在前面，共 $($sharedMailboxRows.Count) 个邮箱。每个邮箱只保留最新记录。"; NoteI18nKey = 'note.shared-mailbox'; Content = $sharedMailboxHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'MailboxLowSpace' -Data @($sharedMailboxRows | Where-Object { $_.CapacityRisk -eq '是' }) },
+    [PSCustomObject]@{ Id = 'dcr-log-errors'; Title = 'DCRLogErrors'; Note = '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。'; NoteI18nKey = 'note.dcr-log-errors'; Content = $dcrLogErrorHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'DcrLogErrors' -Data $dcrLogErrorRows },
+    [PSCustomObject]@{ Id = 'intune-audit'; Title = 'Intune 审计记录'; Note = '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'; NoteI18nKey = 'note.intune-audit'; Content = $intuneHtml; Open = $true; AiAnalysis = Get-AiAnalysis -Category 'IntuneAudit' -Data $intuneGrouped }
 )
 
 # 定义二级分类目录结构
@@ -2357,7 +2398,7 @@ $sideNavHtml += '</nav>'
 
 $reportSectionsHtml = @(
     foreach ($section in $sectionSpecs) {
-        New-ReportSection -Id $section.Id -Title $section.Title -Note $section.Note -Content $section.Content -Open $section.Open -AiAnalysis $section.AiAnalysis
+        New-ReportSection -Id $section.Id -Title $section.Title -Note $section.Note -NoteI18nKey $section.NoteI18nKey -Content $section.Content -Open $section.Open -AiAnalysis $section.AiAnalysis
     }
 ) -join "`r`n"
 
@@ -2455,6 +2496,10 @@ td { color: var(--text); }
 .ip-details .note { margin: 8px 0; }
 .ai-analysis { background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; padding: 10px 14px; margin: 10px 18px; color: #856404; font-size: 13px; line-height: 1.5; }
 .ai-analysis strong { color: #d63384; }
+.kql-copy-wrapper { position: relative; display: flex; justify-content: flex-end; padding: 4px 8px 0 0; }
+.kql-copy-btn { background: #e9ecef; border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 12px; color: var(--text); transition: background 0.2s; }
+.kql-copy-btn:hover { background: #dee2e6; }
+.kql-copy-btn.copied { background: #28a745; color: #fff; border-color: #28a745; }
 @media (max-width: 980px) {
   .layout { display: block; padding: 18px; }
   .side-nav { position: static; max-height: none; margin-bottom: 18px; }
@@ -2536,7 +2581,39 @@ const i18n = {
     'field.输入流ID': '输入流ID', 'field.操作名称': '操作名称', 'field.消息': '消息', 'field.活动时间': '活动时间', 'field.目标': '目标', 'field.权限': '权限',
     'field.结果_说明': '结果/说明', 'field.总记录数': '总记录数', 'field.筛选后记录数': '筛选后记录数', 'field.CSV': 'CSV', 'field.被删除者': '被删除者',
     'field.风险等级': '风险等级', 'field.首次访问时间': '首次访问时间', 'field.最近访问时间': '最近访问时间',
-    'field.UserDisplayName': '用户显示名', 'field.UserPrincipalName': '用户主体名', 'field.Location': '位置', 'field.AppDisplayName': '应用显示名', 'field.ClientAppUsed': '客户端应用'
+    'field.UserDisplayName': '用户显示名', 'field.UserPrincipalName': '用户主体名', 'field.Location': '位置', 'field.AppDisplayName': '应用显示名', 'field.ClientAppUsed': '客户端应用',
+    'btn.copy': '📋 复制',
+    'btn.copied': '✓ 已复制',
+    'risk.high': '高', 'risk.medium': '中', 'risk.low': '低', 'risk.none': '无',
+    'mailbox.yes': '是', 'mailbox.no': '否',
+    'reason.failedSignins.50': '失败次数超过50次', 'reason.failedSignins.10': '失败次数超过10次', 'reason.failedSignins.default': '存在登录失败记录',
+    'reason.suspiciousIp.20': '3天内登录次数超过20次', 'reason.suspiciousIp.5': '3天内登录次数超过5次', 'reason.suspiciousIp.default': '非可信IP登录',
+    'reason.suspiciousSuccess.10': '可信位置外成功登录超过10次', 'reason.suspiciousSuccess.3': '可信位置外成功登录超过3次', 'reason.suspiciousSuccess.default': '可信位置外成功登录',
+    'reason.deleteDisable.delete': '执行了删除操作', 'reason.deleteDisable.disable': '执行了禁用操作', 'reason.deleteDisable.default': '敏感操作',
+    'reason.identityPermission': '权限变更操作',
+    'reason.mailboxLowSpace': '剩余容量不足5%',
+    'reason.dcrLogErrors': '日志采集错误',
+    'reason.intuneAudit': 'Intune审计记录',
+    'deleteTarget.user': '用户: ', 'deleteTarget.device': '设备: ', 'deleteTarget.app': '应用: ', 'deleteTarget.sp': '服务主体: ', 'deleteTarget.target': '目标: ',
+    'ai.label': '🤖 AI 分析（主要风险）：',
+    'ai.FailedSignins': '检测到 {0} 个应用/身份存在登录失败，共计 {1} 次失败事件。主要风险：可能存在暴力破解攻击、凭证泄露或配置错误。建议检查失败原因并采取相应安全措施。',
+    'ai.SuspiciousIP': '检测到 {0} 个可疑IP地址尝试访问。主要风险：可能来自恶意来源的未授权访问尝试。建议核实IP来源，必要时添加防火墙规则或加入可信IP列表。',
+    'ai.SuspiciousSuccess': '检测到 {0} 个来自非可信位置的成功登录。主要风险：可能是凭证泄露后的异地登录，或用户使用了未授权的网络。建议验证用户身份并确认登录合法性。',
+    'ai.DeleteDisable': '检测到 {0} 个删除或禁用操作。主要风险：关键资源被意外或恶意删除/禁用可能导致服务中断。建议审核操作者权限并确认操作合法性。',
+    'ai.IdentityPermission': '检测到 {0} 个身份权限变更操作。主要风险：权限提升或不当授权可能导致安全漏洞。建议严格审核权限变更，确保符合最小权限原则。',
+    'ai.MailboxLowSpace': '检测到 {0} 个邮箱容量不足。主要风险：邮箱满可能导致邮件丢失或业务中断。建议清理邮箱或增加配额。',
+    'ai.DcrLogErrors': '检测到 {0} 个DCR日志错误。主要风险：数据采集规则异常可能导致日志丢失，影响安全监控。建议检查DCR配置和网络连接。',
+    'ai.IntuneAudit': '检测到 {0} 个Intune审计记录。主要风险：设备管理变更可能影响终端安全策略。建议审核变更内容确保合规。',
+    'ai.Default': '检测到相关活动，请关注潜在风险。',
+    'note.failed-signins': 'Managed Identity / Service Principal 登录失败 → 依赖该身份的服务可能无法运行。\n合并规则：操作者、操作内容、时间戳完全相同才合并。',
+    'note.identity-permission': '显示所选时间范围内 AuditLogs 表中 Result 为 success 的全部记录，不再按 Service Principal 操作类型或权限字段额外过滤。',
+    'note.delete-disable': '只统计 delete 语义的操作；每条记录独立显示，不做合并。',
+    'note.suspicious-success': '关注 AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs 三张表；SigninLogs 仍排除 Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office。仅当操作者、操作内容、时间戳完全相同时合并。',
+    'note.suspicious-ip': '仅统计 SigninLogs 中的可疑 IP；同一 IP 在任意连续 3 天窗口内出现 10 次及以上时展示；已排除 TrustedLocation_KJ.txt、TrustedLocation_IDC_Ali.txt 中的可信 IP。',
+    'note.license': 'License 列表优先使用 Microsoft Graph subscribedSkus 获取（SkuPartNumber 更准确）；使用量优先从 AssignedLicensesDCR_CL 日志获取。',
+    'note.shared-mailbox': '显示 MailboxStatisticsDCR_CL 中最新快照识别出的 SharedMailbox，剩余容量不足5%的邮箱视为有风险，有风险的邮箱排在前面。每个邮箱只保留最新记录。',
+    'note.dcr-log-errors': '固定观察 DCRLogErrors 表，并按最近 30 天的时间、InputStreamId、OperationName、Message 展示。',
+    'note.intune-audit': '显示 IntuneAuditLogsDCR_CL 在所选时间范围内的审计记录，并兼容自定义日志常见的 _s 后缀字段。'
   },
   'en-US': {
     'report.title': 'Log Analytics Merged Risk Report',
@@ -2578,7 +2655,39 @@ const i18n = {
     'field.输入流ID': 'Input Stream ID', 'field.操作名称': 'Operation Name', 'field.消息': 'Message', 'field.活动时间': 'Activity Time', 'field.目标': 'Target', 'field.权限': 'Permission',
     'field.结果_说明': 'Result / Description', 'field.总记录数': 'Total Records', 'field.筛选后记录数': 'Filtered Records', 'field.CSV': 'CSV', 'field.被删除者': 'Deleted Target',
     'field.风险等级': 'Risk Level', 'field.首次访问时间': 'First Access Time', 'field.最近访问时间': 'Last Access Time',
-    'field.Identity': 'Identity', 'field.UserDisplayName': 'User Display Name', 'field.UserPrincipalName': 'User Principal Name', 'field.Location': 'Location', 'field.AppDisplayName': 'App Display Name', 'field.ClientAppUsed': 'Client App Used'
+    'field.Identity': 'Identity', 'field.UserDisplayName': 'User Display Name', 'field.UserPrincipalName': 'User Principal Name', 'field.Location': 'Location', 'field.AppDisplayName': 'App Display Name', 'field.ClientAppUsed': 'Client App Used',
+    'btn.copy': '📋 Copy',
+    'btn.copied': '✓ Copied',
+    'risk.high': 'High', 'risk.medium': 'Medium', 'risk.low': 'Low', 'risk.none': 'None',
+    'mailbox.yes': 'Yes', 'mailbox.no': 'No',
+    'reason.failedSignins.50': 'Failed sign-ins exceeded 50 times', 'reason.failedSignins.10': 'Failed sign-ins exceeded 10 times', 'reason.failedSignins.default': 'Sign-in failures detected',
+    'reason.suspiciousIp.20': 'Sign-ins from this IP exceeded 20 times in 3 days', 'reason.suspiciousIp.5': 'Sign-ins from this IP exceeded 5 times in 3 days', 'reason.suspiciousIp.default': 'Sign-in from non-trusted IP',
+    'reason.suspiciousSuccess.10': 'Successful sign-ins outside trusted locations exceeded 10 times', 'reason.suspiciousSuccess.3': 'Successful sign-ins outside trusted locations exceeded 3 times', 'reason.suspiciousSuccess.default': 'Successful sign-in outside trusted locations',
+    'reason.deleteDisable.delete': 'Delete operation performed', 'reason.deleteDisable.disable': 'Disable operation performed', 'reason.deleteDisable.default': 'Sensitive operation',
+    'reason.identityPermission': 'Permission change operation',
+    'reason.mailboxLowSpace': 'Remaining capacity below 5%',
+    'reason.dcrLogErrors': 'Log collection error',
+    'reason.intuneAudit': 'Intune audit record',
+    'deleteTarget.user': 'User: ', 'deleteTarget.device': 'Device: ', 'deleteTarget.app': 'App: ', 'deleteTarget.sp': 'Service Principal: ', 'deleteTarget.target': 'Target: ',
+    'ai.label': '🤖 AI Analysis (Key Risks): ',
+    'ai.FailedSignins': 'Detected {0} application(s)/identity(ies) with sign-in failures, totaling {1} failure events. Key risk: Possible brute-force attack, credential leak, or misconfiguration. Recommend checking failure causes and taking appropriate security measures.',
+    'ai.SuspiciousIP': 'Detected {0} suspicious IP address(es) attempting access. Key risk: Possible unauthorized access from malicious sources. Recommend verifying IP sources and adding firewall rules or trusted IP entries if necessary.',
+    'ai.SuspiciousSuccess': 'Detected {0} successful sign-in(s) from non-trusted locations. Key risk: Possible remote login after credential leak, or user accessing from unauthorized network. Recommend verifying user identity and confirming login legitimacy.',
+    'ai.DeleteDisable': 'Detected {0} delete or disable operation(s). Key risk: Accidental or malicious deletion/disabling of critical resources may cause service interruption. Recommend reviewing operator permissions and confirming operation legitimacy.',
+    'ai.IdentityPermission': 'Detected {0} identity permission change operation(s). Key risk: Privilege escalation or improper authorization may lead to security vulnerabilities. Recommend strictly reviewing permission changes to ensure compliance with the principle of least privilege.',
+    'ai.MailboxLowSpace': 'Detected {0} mailbox(es) with insufficient capacity. Key risk: Full mailboxes may cause email loss or business interruption. Recommend cleaning up mailboxes or increasing quotas.',
+    'ai.DcrLogErrors': 'Detected {0} DCR log error(s). Key risk: Data collection rule anomalies may cause log loss, affecting security monitoring. Recommend checking DCR configuration and network connectivity.',
+    'ai.IntuneAudit': 'Detected {0} Intune audit record(s). Key risk: Device management changes may affect endpoint security policies. Recommend reviewing change content for compliance.',
+    'ai.Default': 'Related activity detected, please pay attention to potential risks.',
+    'note.failed-signins': 'Managed Identity / Service Principal sign-in failures → Services depending on these identities may not function properly.\nMerge rule: Only merge when operator, operation content, and timestamp are exactly the same.',
+    'note.identity-permission': 'Shows all records with Result = success in the AuditLogs table within the selected time range, without additional filtering by Service Principal operation type or permission fields.',
+    'note.delete-disable': 'Only counts delete operations; each record is displayed independently without merging.',
+    'note.suspicious-success': 'Focus on AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogs tables; SigninLogs still excludes Windows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Office. Only merge when operator, operation content, and timestamp are exactly the same.',
+    'note.suspicious-ip': 'Only counts suspicious IPs in SigninLogs; displayed when the same IP appears 10 or more times within any consecutive 3-day window; trusted IPs from TrustedLocation_KJ.txt and TrustedLocation_IDC_Ali.txt are excluded.',
+    'note.license': 'License list uses Microsoft Graph subscribedSkus first (SkuPartNumber is more accurate); usage is primarily obtained from AssignedLicensesDCR_CL logs.',
+    'note.shared-mailbox': 'Shows SharedMailbox identified from the latest snapshot in MailboxStatisticsDCR_CL. Mailboxes with less than 5% remaining capacity are considered at risk, with risky mailboxes listed first. Only the latest record for each mailbox is kept.',
+    'note.dcr-log-errors': 'Fixed observation of DCRLogErrors table, displaying time, InputStreamId, OperationName, and Message for the last 30 days.',
+    'note.intune-audit': 'Shows audit records from IntuneAuditLogsDCR_CL within the selected time range, compatible with _s suffix fields common in custom logs.'
   },
   'ja-JP': {
     'report.title': 'Log Analytics 統合リスクレポート',
@@ -2620,7 +2729,39 @@ const i18n = {
     'field.输入流ID': '入力ストリーム ID', 'field.操作名称': '操作名', 'field.消息': 'メッセージ', 'field.活动时间': 'アクティビティ時刻', 'field.目标': '対象', 'field.权限': '権限',
     'field.结果_说明': '結果 / 説明', 'field.总记录数': '総レコード数', 'field.筛选后记录数': 'フィルター後レコード数', 'field.CSV': 'CSV', 'field.被删除者': '削除対象',
     'field.风险等级': 'リスクレベル', 'field.首次访问时间': '初回アクセス時刻', 'field.最近访问时间': '最終アクセス時刻',
-    'field.Identity': 'ID', 'field.UserDisplayName': 'ユーザー表示名', 'field.UserPrincipalName': 'ユーザープリンシパル名', 'field.Location': '場所', 'field.AppDisplayName': 'アプリ表示名', 'field.ClientAppUsed': 'クライアントアプリ'
+    'field.Identity': 'ID', 'field.UserDisplayName': 'ユーザー表示名', 'field.UserPrincipalName': 'ユーザープリンシパル名', 'field.Location': '場所', 'field.AppDisplayName': 'アプリ表示名', 'field.ClientAppUsed': 'クライアントアプリ',
+    'btn.copy': '📋 コピー',
+    'btn.copied': '✓ コピー済み',
+    'risk.high': '高', 'risk.medium': '中', 'risk.low': '低', 'risk.none': 'なし',
+    'mailbox.yes': 'はい', 'mailbox.no': 'いいえ',
+    'reason.failedSignins.50': '失敗回数が50回を超える', 'reason.failedSignins.10': '失敗回数が10回を超える', 'reason.failedSignins.default': 'サインイン失敗あり',
+    'reason.suspiciousIp.20': '3日以内にこのIPからのサインインが20回を超える', 'reason.suspiciousIp.5': '3日以内にこのIPからのサインインが5回を超える', 'reason.suspiciousIp.default': '信頼されていないIPからのサインイン',
+    'reason.suspiciousSuccess.10': '信頼済み場所外での成功サインインが10回を超える', 'reason.suspiciousSuccess.3': '信頼済み場所外での成功サインインが3回を超える', 'reason.suspiciousSuccess.default': '信頼済み場所外での成功サインイン',
+    'reason.deleteDisable.delete': '削除操作が実行された', 'reason.deleteDisable.disable': '無効化操作が実行された', 'reason.deleteDisable.default': '機密操作',
+    'reason.identityPermission': '権限変更操作',
+    'reason.mailboxLowSpace': '残容量が5%未満',
+    'reason.dcrLogErrors': 'ログ収集エラー',
+    'reason.intuneAudit': 'Intune監査レコード',
+    'deleteTarget.user': 'ユーザー: ', 'deleteTarget.device': 'デバイス: ', 'deleteTarget.app': 'アプリ: ', 'deleteTarget.sp': 'サービスプリンシパル: ', 'deleteTarget.target': '対象: ',
+    'ai.label': '🤖 AI分析（主なリスク）：',
+    'ai.FailedSignins': '{0}個のアプリ/IDでサインイン失敗を検出、合計{1}件の失敗イベント。主なリスク：ブルートフォース攻撃、認証情報漏洩、または設定エラーの可能性があります。失敗原因を確認し、適切なセキュリティ対策を推奨します。',
+    'ai.SuspiciousIP': '{0}個の疑わしいIPアドレスからのアクセス試行を検出。主なリスク：悪意のあるソースからの不正アクセスの可能性があります。IPソースを確認し、必要に応じてファイアウォールルールまたは信頼済みIPリストへの追加を推奨します。',
+    'ai.SuspiciousSuccess': '信頼されていない場所からの成功サインインを{0}件検出。主なリスク：認証情報漏洩後のリモートログイン、またはユーザーが不正なネットワークからアクセスしている可能性があります。ユーザーIDを確認し、ログインの正当性を確認することを推奨します。',
+    'ai.DeleteDisable': '{0}件の削除または無効化操作を検出。主なリスク：重要なリソースの偶発的または悪意のある削除/無効化により、サービス中断が発生する可能性があります。操作権限を確認し、操作の正当性を確認することを推奨します。',
+    'ai.IdentityPermission': '{0}件のID権限変更操作を検出。主なリスク：権限昇格または不適切な認可により、セキュリティ脆弱性が発生する可能性があります。最小権限の原則に従って、権限変更を厳格に確認することを推奨します。',
+    'ai.MailboxLowSpace': '{0}個のメールボックス容量不足を検出。主なリスク：メールボックスがいっぱいになると、メールの紛失や業務中断が発生する可能性があります。メールボックスのクリーンアップまたはクォータの増加を推奨します。',
+    'ai.DcrLogErrors': '{0}件のDCRログエラーを検出。主なリスク：データ収集ルールの異常によりログが紛失し、セキュリティモニタリングに影響を与える可能性があります。DCR設定とネットワーク接続を確認することを推奨します。',
+    'ai.IntuneAudit': '{0}件のIntune監査レコードを検出。主なリスク：デバイス管理の変更により、エンドポイントセキュリティポリシーに影響を与える可能性があります。変更内容を確認してコンプライアンスを確保することを推奨します。',
+    'ai.Default': '関連アクティビティを検出しました。潜在的なリスクに注意してください。',
+    'note.failed-signins': 'マネージドID / サービスプリンシパルのサインイン失敗 → これらのIDに依存するサービスが正常に動作しない可能性があります。\nマージルール：操作者、操作内容、タイムスタンプが完全に一致する場合のみマージします。',
+    'note.identity-permission': '選択した時間範囲内のAuditLogsテーブルでResult = successのすべてのレコードを表示します。サービスプリンシパルの操作タイプや権限フィールドによる追加フィルタリングは行いません。',
+    'note.delete-disable': '削除操作のみをカウントします。各レコードはマージせずに独立して表示されます。',
+    'note.suspicious-success': 'AADManagedIdentitySignInLogs / AADServicePrincipalSignInLogs / SigninLogsの3つのテーブルに注目します。SigninLogsは引き続きWindows Sign In / Microsoft Edge / Sangfor SASE VPN / Microsoft Officeを除外します。操作者、操作内容、タイムスタンプが完全に一致する場合のみマージします。',
+    'note.suspicious-ip': 'SigninLogs内の疑わしいIPのみをカウントします。同じIPが連続する3日間のウィンドウ内で10回以上出現した場合に表示されます。TrustedLocation_KJ.txtとTrustedLocation_IDC_Ali.txtからの信頼済みIPは除外されます。',
+    'note.license': 'ライセンスリストは最初にMicrosoft Graph subscribedSkusを使用します（SkuPartNumberがより正確です）。使用量は主にAssignedLicensesDCR_CLログから取得されます。',
+    'note.shared-mailbox': 'MailboxStatisticsDCR_CLの最新スナップショットから識別されたSharedMailboxを表示します。残容量が5%未満のメールボックスはリスクありと見なされ、リスクのあるメールボックスが先にリストされます。各メールボックスの最新レコードのみが保持されます。',
+    'note.dcr-log-errors': 'DCRLogErrorsテーブルの固定観測。過去30日間の時間、InputStreamId、OperationName、Messageを表示します。',
+    'note.intune-audit': '選択した時間範囲内のIntuneAuditLogsDCR_CLからの監査レコードを表示します。カスタムログで一般的な_sサフィックスフィールドに対応しています。'
   }
 };
 function applyLanguage(lang) {
@@ -2629,7 +2770,15 @@ function applyLanguage(lang) {
   document.title = dictionary['report.title'] || document.title;
   document.querySelectorAll('[data-i18n]').forEach((element) => {
     const key = element.getAttribute('data-i18n');
-    if (dictionary[key]) element.textContent = dictionary[key];
+    if (dictionary[key]) {
+      let text = dictionary[key];
+      // Handle parameterized translations for AI analysis
+      const count = element.getAttribute('data-i18n-count');
+      const total = element.getAttribute('data-i18n-total');
+      if (count !== null) text = text.replace('{0}', count);
+      if (total !== null) text = text.replace('{1}', total);
+      element.textContent = text;
+    }
   });
   const selector = document.getElementById('languageSelect');
   if (selector) selector.value = lang;
@@ -2638,6 +2787,49 @@ function applyLanguage(lang) {
 const savedLanguage = localStorage.getItem('logAnalyticsReportLanguage') || 'zh-CN';
 applyLanguage(savedLanguage);
 document.getElementById('languageSelect')?.addEventListener('change', (event) => applyLanguage(event.target.value));
+
+function copyKqlToClipboard(kqlId) {
+  const codeEl = document.getElementById(kqlId + '-code');
+  if (!codeEl) return;
+  const text = codeEl.textContent || codeEl.innerText;
+  const lang = localStorage.getItem('logAnalyticsReportLanguage') || 'zh-CN';
+  const copiedText = (i18n[lang] && i18n[lang]['btn.copied']) || '✓ 已复制';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = document.querySelector('.kql-copy-btn[onclick*="' + kqlId + '"]');
+      if (btn) {
+        btn.classList.add('copied');
+        const originalHtml = btn.innerHTML;
+        btn.textContent = copiedText;
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = originalHtml;
+        }, 2000);
+      }
+    });
+  } else {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      const btn = document.querySelector('.kql-copy-btn[onclick*="' + kqlId + '"]');
+      if (btn) {
+        btn.classList.add('copied');
+        const originalHtml = btn.innerHTML;
+        btn.textContent = copiedText;
+        setTimeout(() => {
+          btn.classList.remove('copied');
+          btn.innerHTML = originalHtml;
+        }, 2000);
+      }
+    } catch (e) { }
+    document.body.removeChild(textarea);
+  }
+}
 </script>
 </body>
 </html>
