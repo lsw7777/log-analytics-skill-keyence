@@ -242,13 +242,14 @@ function New-TableHtml {
 function New-CodeBlockHtml {
     param([string]$Text)
     $uniqueId = 'kql-' + ([System.Guid]::NewGuid().ToString('N').Substring(0, 8))
+    $escapedText = Escape-Html $Text
     return @"
 <div class="kql-copy-wrapper">
 <button class="kql-copy-btn" onclick="copyKqlToClipboard('$uniqueId')" data-i18n="btn.copy" title="复制KQL语句">📋 复制</button>
 </div>
 <details class="kql-block" id="$uniqueId">
 <summary data-i18n="label.kql">KQL 语句</summary>
-<code id="$uniqueId-code">' + (Escape-Html $Text) + '</code>
+<code id="$uniqueId-code">$escapedText</code>
 </details>
 "@
 }
@@ -1757,7 +1758,7 @@ for ($i = 0; $i -lt $datasets.Count; $i++) {
             $appName = Get-SigninAppName -Row $row
             $isAllowedInteractiveApp = ($table -eq 'SigninLogs' -and (Test-AllowedSigninApp -AppName $appName))
             if (-not $isAllowedInteractiveApp -and -not (Test-SangforRelatedSigninRow -Row $row)) {
-                $event = New-EventRecord -Table $table -Row $row -Reason "可信位置外成功登录，应用：$appName"
+                $event = New-EventRecord -Table $table -Row $row -Reason $appName
                 if (-not (Test-SangforRelatedSigninRow -Row $row -EventRecord $event)) {
                     $suspiciousSigninSuccess.Add($event) | Out-Null
                     if ($table -eq 'SigninLogs') {
@@ -2167,7 +2168,7 @@ $deleteDisableHtml = (New-CodeBlockHtml -Text $deleteDisableKql) + (New-TableHtm
     $riskReason = Get-RiskReason -Category 'DeleteDisable' -Row $r
     $riskBadge = Get-RiskLevelBadge -Level $riskLevel -Reason $riskReason
     @($riskBadge, $r.Time, (Format-UserForReport -User $r.User), $r.Operation, (Format-DeleteTargetForReport -Target $r.Target -Operation $r.Operation))
-} -RawHtmlColumns @('风险等级'))
+} -RawHtmlColumns @('风险等级', '被删除者'))
 $suspiciousIpTableStyle = '<style>.suspicious-ip-table-wrap{overflow-x:auto;display:block}.suspicious-ip-table-wrap table{width:max-content;min-width:100%}.suspicious-ip-table-wrap th,.suspicious-ip-table-wrap td{white-space:nowrap}.suspicious-ip-table-wrap .sip-cell-scroll{white-space:normal;max-width:14em;max-height:4.5em;overflow-y:auto;display:block;word-break:break-all}</style>'
 $suspiciousIpTableWrapperOpen = '<div class="suspicious-ip-table-wrap">'
 $suspiciousIpTableWrapperClose = '</div>'
@@ -2192,8 +2193,9 @@ $signinSuspiciousHtml = (New-CodeBlockHtml -Text $suspiciousSuccessKql) + (New-T
     $riskLevel = Get-RiskLevel -Category 'SuspiciousSuccess' -Row $r
     $riskReason = Get-RiskReason -Category 'SuspiciousSuccess' -Row $r
     $riskBadge = Get-RiskLevelBadge -Level $riskLevel -Reason $riskReason
-    @($riskBadge, $r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $r.Reason)
-} -RawHtmlColumns @('风险等级'))
+    $reasonDisplay = if ($r.Reason) { "<span data-i18n='reason.suspiciousSuccess.appPrefix'></span>" + (Escape-Html $r.Reason) } else { '' }
+    @($riskBadge, $r.Count, $r.LastTime, $r.User, $r.Operation, $r.IP, $reasonDisplay)
+} -RawHtmlColumns @('风险等级', '说明'))
 $topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml -Rows $topClientIps -Columns @('IP', '次数') -CellBuilder {
     param($r) @($r.IP, $r.Count)
 })
@@ -2202,11 +2204,11 @@ $topClientIpHtml = (New-CodeBlockHtml -Text $clientIpRankLogic) + (New-TableHtml
 function Get-LicenseStatus {
     param([int]$Remaining)
     if ($Remaining -eq 0) {
-        return '<span style="color:#ffc107;">已耗尽</span>'
+        return '<span style="color:#ffc107;" data-i18n="licenseStatus.exhausted">已耗尽</span>'
     } elseif ($Remaining -lt 5) {
-        return '<span style="color:#28a745;">即将耗尽</span>'
+        return '<span style="color:#28a745;" data-i18n="licenseStatus.low">即将耗尽</span>'
     } else {
-        return '<span style="color:#6c757d;">充足</span>'
+        return '<span style="color:#6c757d;" data-i18n="licenseStatus.sufficient">充足</span>'
     }
 }
 
@@ -2227,9 +2229,9 @@ function Get-LicenseRiskLevel {
 function Get-LicenseRiskReason {
     param([int]$Remaining)
     if ($Remaining -eq 0) {
-        return 'License 已耗尽'
+        return 'licenseReason.exhausted'
     } elseif ($Remaining -lt 5) {
-        return 'License 即将耗尽（剩余不足5个）'
+        return 'licenseReason.low'
     }
     return ''
 }
@@ -2277,11 +2279,11 @@ foreach ($license in $licenseUsage) {
 }
 $licenseOverallRiskReason = ''
 if ($licenseOverallRisk -eq 'medium') {
-    $licenseOverallRiskReason = '存在 License 已耗尽'
+    $licenseOverallRiskReason = 'licenseReason.hasExhausted'
 } elseif ($licenseOverallRisk -eq 'low') {
-    $licenseOverallRiskReason = '存在 License 即将耗尽'
+    $licenseOverallRiskReason = 'licenseReason.hasLow'
 } elseif ($licenseOverallRisk -eq 'none') {
-    $licenseOverallRiskReason = 'License 充足'
+    $licenseOverallRiskReason = 'licenseReason.sufficient'
 }
 
 $licenseOverallRiskBadge = Get-RiskLevelBadge -Level $licenseOverallRisk -Reason $licenseOverallRiskReason
@@ -2295,6 +2297,9 @@ $sharedMailboxHtml = (New-CodeBlockHtml -Text $sharedMailboxKql) + (New-TableHtm
     $capacityRiskI18n = if ($r.CapacityRisk -eq '是') { "<span data-i18n='mailbox.yes'>是</span>" } else { "<span data-i18n='mailbox.no'>否</span>" }
     @($riskBadge, $r.DisplayName, $r.EmailAddress, $r.CapacityText, $capacityRiskI18n)
 } -RawHtmlColumns @('风险等级', '邮箱容量是否风险'))
+
+
+
 # DCRLogErrors 的 KQL 需要反映实际的聚合逻辑
 $dcrLogErrorsKql = @"
 DCRLogErrors
@@ -2586,6 +2591,11 @@ const i18n = {
     'btn.copied': '✓ 已复制',
     'risk.high': '高', 'risk.medium': '中', 'risk.low': '低', 'risk.none': '无',
     'mailbox.yes': '是', 'mailbox.no': '否',
+    'field.剩余容量_总容量': '剩余容量/总容量',
+    'licenseStatus.exhausted': '已耗尽', 'licenseStatus.low': '即将耗尽', 'licenseStatus.sufficient': '充足',
+    'licenseReason.exhausted': 'License 已耗尽', 'licenseReason.low': 'License 即将耗尽（剩余不足5个）',
+    'licenseReason.hasExhausted': '存在 License 已耗尽', 'licenseReason.hasLow': '存在 License 即将耗尽', 'licenseReason.sufficient': 'License 充足',
+    'reason.suspiciousSuccess.appPrefix': '可信位置外成功登录，应用：',
     'reason.failedSignins.50': '失败次数超过50次', 'reason.failedSignins.10': '失败次数超过10次', 'reason.failedSignins.default': '存在登录失败记录',
     'reason.suspiciousIp.20': '3天内登录次数超过20次', 'reason.suspiciousIp.5': '3天内登录次数超过5次', 'reason.suspiciousIp.default': '非可信IP登录',
     'reason.suspiciousSuccess.10': '可信位置外成功登录超过10次', 'reason.suspiciousSuccess.3': '可信位置外成功登录超过3次', 'reason.suspiciousSuccess.default': '可信位置外成功登录',
@@ -2594,7 +2604,12 @@ const i18n = {
     'reason.mailboxLowSpace': '剩余容量不足5%',
     'reason.dcrLogErrors': '日志采集错误',
     'reason.intuneAudit': 'Intune审计记录',
+    'reason.suspiciousSuccess.app': '可信位置外成功登录，应用：{0}',
     'deleteTarget.user': '用户: ', 'deleteTarget.device': '设备: ', 'deleteTarget.app': '应用: ', 'deleteTarget.sp': '服务主体: ', 'deleteTarget.target': '目标: ',
+    'mailbox.capacityRatio': '剩余容量/总容量',
+    'licenseStatus.exhausted': '已耗尽', 'licenseStatus.low': '即将耗尽', 'licenseStatus.sufficient': '充足',
+    'licenseReason.exhausted': 'License 已耗尽', 'licenseReason.low': 'License 即将耗尽（剩余不足5个）',
+    'licenseReason.hasExhausted': '存在 License 已耗尽', 'licenseReason.hasLow': '存在 License 即将耗尽', 'licenseReason.sufficient': 'License 充足',
     'ai.label': '🤖 AI 分析（主要风险）：',
     'ai.FailedSignins': '检测到 {0} 个应用/身份存在登录失败，共计 {1} 次失败事件。主要风险：可能存在暴力破解攻击、凭证泄露或配置错误。建议检查失败原因并采取相应安全措施。',
     'ai.SuspiciousIP': '检测到 {0} 个可疑IP地址尝试访问。主要风险：可能来自恶意来源的未授权访问尝试。建议核实IP来源，必要时添加防火墙规则或加入可信IP列表。',
@@ -2660,6 +2675,11 @@ const i18n = {
     'btn.copied': '✓ Copied',
     'risk.high': 'High', 'risk.medium': 'Medium', 'risk.low': 'Low', 'risk.none': 'None',
     'mailbox.yes': 'Yes', 'mailbox.no': 'No',
+    'field.剩余容量_总容量': 'Remaining/Total Capacity',
+    'licenseStatus.exhausted': 'Exhausted', 'licenseStatus.low': 'Running Low', 'licenseStatus.sufficient': 'Sufficient',
+    'licenseReason.exhausted': 'License exhausted', 'licenseReason.low': 'License running low (less than 5 remaining)',
+    'licenseReason.hasExhausted': 'Has exhausted license', 'licenseReason.hasLow': 'Has license running low', 'licenseReason.sufficient': 'License sufficient',
+    'reason.suspiciousSuccess.appPrefix': 'Successful sign-in outside trusted locations, app: ',
     'reason.failedSignins.50': 'Failed sign-ins exceeded 50 times', 'reason.failedSignins.10': 'Failed sign-ins exceeded 10 times', 'reason.failedSignins.default': 'Sign-in failures detected',
     'reason.suspiciousIp.20': 'Sign-ins from this IP exceeded 20 times in 3 days', 'reason.suspiciousIp.5': 'Sign-ins from this IP exceeded 5 times in 3 days', 'reason.suspiciousIp.default': 'Sign-in from non-trusted IP',
     'reason.suspiciousSuccess.10': 'Successful sign-ins outside trusted locations exceeded 10 times', 'reason.suspiciousSuccess.3': 'Successful sign-ins outside trusted locations exceeded 3 times', 'reason.suspiciousSuccess.default': 'Successful sign-in outside trusted locations',
@@ -2668,7 +2688,12 @@ const i18n = {
     'reason.mailboxLowSpace': 'Remaining capacity below 5%',
     'reason.dcrLogErrors': 'Log collection error',
     'reason.intuneAudit': 'Intune audit record',
+    'reason.suspiciousSuccess.app': 'Successful sign-in outside trusted locations, app: {0}',
     'deleteTarget.user': 'User: ', 'deleteTarget.device': 'Device: ', 'deleteTarget.app': 'App: ', 'deleteTarget.sp': 'Service Principal: ', 'deleteTarget.target': 'Target: ',
+    'mailbox.capacityRatio': 'Remaining/Total Capacity',
+    'licenseStatus.exhausted': 'Exhausted', 'licenseStatus.low': 'Running Low', 'licenseStatus.sufficient': 'Sufficient',
+    'licenseReason.exhausted': 'License exhausted', 'licenseReason.low': 'License running low (less than 5 remaining)',
+    'licenseReason.hasExhausted': 'Has exhausted license', 'licenseReason.hasLow': 'Has license running low', 'licenseReason.sufficient': 'License sufficient',
     'ai.label': '🤖 AI Analysis (Key Risks): ',
     'ai.FailedSignins': 'Detected {0} application(s)/identity(ies) with sign-in failures, totaling {1} failure events. Key risk: Possible brute-force attack, credential leak, or misconfiguration. Recommend checking failure causes and taking appropriate security measures.',
     'ai.SuspiciousIP': 'Detected {0} suspicious IP address(es) attempting access. Key risk: Possible unauthorized access from malicious sources. Recommend verifying IP sources and adding firewall rules or trusted IP entries if necessary.',
@@ -2734,6 +2759,11 @@ const i18n = {
     'btn.copied': '✓ コピー済み',
     'risk.high': '高', 'risk.medium': '中', 'risk.low': '低', 'risk.none': 'なし',
     'mailbox.yes': 'はい', 'mailbox.no': 'いいえ',
+    'field.剩余容量_总容量': '残容量/総容量',
+    'licenseStatus.exhausted': '耗尽', 'licenseStatus.low': '残りわずか', 'licenseStatus.sufficient': '充足',
+    'licenseReason.exhausted': 'ライセンス耗尽', 'licenseReason.low': 'ライセンス残りわずか（残数5未満）',
+    'licenseReason.hasExhausted': 'ライセンス耗尽あり', 'licenseReason.hasLow': 'ライセンス残りわずかあり', 'licenseReason.sufficient': 'ライセンス充足',
+    'reason.suspiciousSuccess.appPrefix': '信頼済み場所外での成功サインイン、アプリ：',
     'reason.failedSignins.50': '失敗回数が50回を超える', 'reason.failedSignins.10': '失敗回数が10回を超える', 'reason.failedSignins.default': 'サインイン失敗あり',
     'reason.suspiciousIp.20': '3日以内にこのIPからのサインインが20回を超える', 'reason.suspiciousIp.5': '3日以内にこのIPからのサインインが5回を超える', 'reason.suspiciousIp.default': '信頼されていないIPからのサインイン',
     'reason.suspiciousSuccess.10': '信頼済み場所外での成功サインインが10回を超える', 'reason.suspiciousSuccess.3': '信頼済み場所外での成功サインインが3回を超える', 'reason.suspiciousSuccess.default': '信頼済み場所外での成功サインイン',
@@ -2742,7 +2772,12 @@ const i18n = {
     'reason.mailboxLowSpace': '残容量が5%未満',
     'reason.dcrLogErrors': 'ログ収集エラー',
     'reason.intuneAudit': 'Intune監査レコード',
+    'reason.suspiciousSuccess.app': '信頼済み場所外での成功サインイン、アプリ：{0}',
     'deleteTarget.user': 'ユーザー: ', 'deleteTarget.device': 'デバイス: ', 'deleteTarget.app': 'アプリ: ', 'deleteTarget.sp': 'サービスプリンシパル: ', 'deleteTarget.target': '対象: ',
+    'mailbox.capacityRatio': '残容量/総容量',
+    'licenseStatus.exhausted': '耗尽', 'licenseStatus.low': '残りわずか', 'licenseStatus.sufficient': '充足',
+    'licenseReason.exhausted': 'ライセンス耗尽', 'licenseReason.low': 'ライセンス残りわずか（残数5未満）',
+    'licenseReason.hasExhausted': 'ライセンス耗尽あり', 'licenseReason.hasLow': 'ライセンス残りわずかあり', 'licenseReason.sufficient': 'ライセンス充足',
     'ai.label': '🤖 AI分析（主なリスク）：',
     'ai.FailedSignins': '{0}個のアプリ/IDでサインイン失敗を検出、合計{1}件の失敗イベント。主なリスク：ブルートフォース攻撃、認証情報漏洩、または設定エラーの可能性があります。失敗原因を確認し、適切なセキュリティ対策を推奨します。',
     'ai.SuspiciousIP': '{0}個の疑わしいIPアドレスからのアクセス試行を検出。主なリスク：悪意のあるソースからの不正アクセスの可能性があります。IPソースを確認し、必要に応じてファイアウォールルールまたは信頼済みIPリストへの追加を推奨します。',
